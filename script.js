@@ -1,13 +1,13 @@
 const { useState, useEffect, useRef } = React;
 
 const firebaseConfig = {
-  apiKey: "AIzaSyDRNfbYa7hQPKqU7iG39Cav7uYR2ZxoPzk",
-  authDomain: "exam-page-52ca7.firebaseapp.com",
-  projectId: "exam-page-52ca7",
-  storageBucket: "exam-page-52ca7.firebasestorage.app",
-  messagingSenderId: "443344349852",
-  appId: "1:443344349852:web:5eb470af4438d24e12db59",
-  measurementId: "G-PTZ7700E40"
+    apiKey: "AIzaSyDRNfbYa7hQPKqU7iG39Cav7uYR2ZxoPzk",
+    authDomain: "exam-page-52ca7.firebaseapp.com",
+    projectId: "exam-page-52ca7",
+    storageBucket: "exam-page-52ca7.firebasestorage.app",
+    messagingSenderId: "443344349852",
+    appId: "1:443344349852:web:5eb470af4438d24e12db59",
+    measurementId: "G-PTZ7700E40"
 };
 
 if (!firebase.apps.length) {
@@ -18,7 +18,7 @@ const db = firebase.firestore();
 // Helper: Parse pasted raw text into structured question objects
 const parseRawQuestions = (rawText) => {
     if (!rawText.trim()) return [];
-    
+
     const blocks = rawText.trim().split(/\n\s*\n/);
     const parsedQuestions = [];
 
@@ -124,6 +124,7 @@ function App() {
     // Search & Filter State
     const [searchQuery, setSearchQuery] = useState('');
     const [selectedSubjectFilter, setSelectedSubjectFilter] = useState('All');
+    const [customSubjects, setCustomSubjects] = useState(['Mathematics', 'Physics', 'Chemistry', 'Biology', 'English']);
 
     // Add Modal State
     const [showAddModal, setShowAddModal] = useState(false);
@@ -216,7 +217,7 @@ function App() {
         try {
             await db.collection('exams').doc(generatedId).set(newExamObj);
             setExams(prev => [newExamObj, ...prev]);
-            
+
             setExamTitle('');
             setExamSubject('');
             setExamDuration(60);
@@ -224,7 +225,7 @@ function App() {
             setRawQuestionsInput('');
             setParsedQuestions([]);
             setShowAddModal(false);
-            
+
             alert("Exam added and published successfully!");
         } catch (error) {
             console.error("Error saving exam to Firestore: ", error);
@@ -360,7 +361,7 @@ function App() {
             const updated = { ...prev, [activeExam.id]: newHigh };
             try {
                 localStorage.setItem('exam_high_scores', JSON.stringify(updated));
-            } catch (e) {}
+            } catch (e) { }
             return updated;
         });
 
@@ -472,35 +473,42 @@ function App() {
         return matchesSearch && matchesSubject;
     });
 
-    // Helper for Grade Style logic
+    // Helper for Grade Style logic (with percentage fill gradients)
     const getExamGradeStyling = (scorePct) => {
         if (scorePct === undefined || scorePct === null) {
             return {
                 cardBg: "bg-white border-gray-200 hover:border-gray-300",
-                badgeBg: "bg-gray-100 text-gray-600 border-gray-200",
+                badgeClass: "bg-gray-100 text-gray-600 border-gray-200 inline-block px-2 py-0.5 rounded-md text-[10px] border",
                 label: null
             };
         }
+
+        const baseClass = "font-bold inline-block px-2 py-0.5 rounded-md text-[10px] border relative z-10 text-center min-w-[90px]";
+
         if (scorePct >= 75) {
             return {
                 cardBg: "bg-emerald-50/80 border-emerald-300 hover:border-emerald-400 shadow-sm",
-                badgeBg: "bg-emerald-200 text-emerald-900 border-emerald-400 font-bold",
-                label: `${scorePct}%`
+                badgeClass: `text-emerald-900 border-emerald-400 ${baseClass}`,
+                label: `${scorePct}%`,
+                gradient: `linear-gradient(to right, #6ee7b7 ${scorePct}%, #ecfdf5 ${scorePct}%)`
             };
         } else if (scorePct >= 50) {
             return {
                 cardBg: "bg-amber-50/80 border-amber-300 hover:border-amber-400 shadow-sm",
-                badgeBg: "bg-amber-200 text-amber-900 border-amber-400 font-bold",
-                label: `${scorePct}%`
+                badgeClass: `text-amber-900 border-amber-400 ${baseClass}`,
+                label: `${scorePct}%`,
+                gradient: `linear-gradient(to right, #fcd34d ${scorePct}%, #fffbeb ${scorePct}%)`
             };
         } else {
             return {
                 cardBg: "bg-rose-50/80 border-rose-300 hover:border-rose-400 shadow-sm",
-                badgeBg: "bg-rose-200 text-rose-900 border-rose-400 font-bold",
-                label: `${scorePct}%`
+                badgeClass: `text-rose-900 border-rose-400 ${baseClass}`,
+                label: `${scorePct}%`,
+                gradient: `linear-gradient(to right, #fca5a5 ${scorePct}%, #fff1f2 ${scorePct}%)`
             };
         }
     };
+    const allAvailableSubjects = Array.from(new Set([...customSubjects, ...exams.map(e => e.subject).filter(Boolean)]));
 
     // --- VIEW: DASHBOARD ---
     if (currentView === 'dashboard') {
@@ -571,8 +579,12 @@ function App() {
                                                     {exam.subject}
                                                 </span>
                                                 {styling.label && (
-                                                    <span className={`inline-block px-2 py-0.5 rounded-md text-[10px] border ${styling.badgeBg}`} title="Highest Score Percentage">
-                                                        High Score: {styling.label}
+                                                    <span
+                                                        className={styling.badgeClass}
+                                                        title="Highest Score Percentage"
+                                                        style={{ background: styling.gradient }}
+                                                    >
+                                                        Score: {styling.label}
                                                     </span>
                                                 )}
                                             </div>
@@ -620,7 +632,7 @@ function App() {
                                         <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                                     </button>
                                 </div>
-                                
+
                                 <div className="p-6 overflow-y-auto space-y-6 flex-1">
                                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                                         <div>
@@ -628,8 +640,29 @@ function App() {
                                             <input type="text" value={examTitle} onChange={(e) => setExamTitle(e.target.value)} placeholder="e.g. AAU Model Exam 1" className="w-full border border-gray-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
                                         </div>
                                         <div>
-                                            <label className="block text-sm font-semibold text-gray-700 mb-1">Subject *</label>
-                                            <input type="text" value={examSubject} onChange={(e) => setExamSubject(e.target.value)} placeholder="e.g. Physics" className="w-full border border-gray-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
+                                            <label className="block text-sm font-semibold text-gray-700 mb-1">Subject</label>
+                                            <div className="flex gap-2">
+                                                <select
+                                                    value={examSubject}
+                                                    onChange={(e) => setExamSubject(e.target.value)}
+                                                    className="w-full border border-gray-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white"
+                                                >
+                                                    <option value="" disabled>Select subject...</option>
+                                                    {allAvailableSubjects.map(sub => <option key={sub} value={sub}>{sub}</option>)}
+                                                </select>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        const newSub = window.prompt("Enter new subject name:");
+                                                        if (newSub && newSub.trim()) {
+                                                            setCustomSubjects(prev => [...prev, newSub.trim()]);
+                                                            setExamSubject(newSub.trim());
+                                                        }
+                                                    }}
+                                                    className="px-3 bg-blue-100 hover:bg-blue-200 text-blue-700 font-bold rounded-md border border-blue-200 transition-colors"
+                                                    title="Add Custom Subject"
+                                                >+</button>
+                                            </div>
                                         </div>
                                         <div>
                                             <label className="block text-sm font-semibold text-gray-700 mb-1">Duration (Minutes)</label>
@@ -684,9 +717,8 @@ function App() {
                                     <button
                                         onClick={handleSaveExamToFirestore}
                                         disabled={isSavingExam || parsedQuestions.length === 0}
-                                        className={`px-5 py-2 text-white text-sm font-bold rounded-md shadow transition-colors ${
-                                            isSavingExam || parsedQuestions.length === 0 ? 'bg-gray-400 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700'
-                                        }`}
+                                        className={`px-5 py-2 text-white text-sm font-bold rounded-md shadow transition-colors ${isSavingExam || parsedQuestions.length === 0 ? 'bg-gray-400 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700'
+                                            }`}
                                     >
                                         {isSavingExam ? 'Saving...' : 'Save & Publish Exam'}
                                     </button>
@@ -788,9 +820,8 @@ function App() {
                                     <button
                                         onClick={handleSaveEditedExam}
                                         disabled={isUpdatingExam}
-                                        className={`px-5 py-2 text-white text-sm font-bold rounded-md shadow transition-colors ${
-                                            isUpdatingExam ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'
-                                        }`}
+                                        className={`px-5 py-2 text-white text-sm font-bold rounded-md shadow transition-colors ${isUpdatingExam ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'
+                                            }`}
                                     >
                                         {isUpdatingExam ? 'Saving...' : 'Save Changes'}
                                     </button>
