@@ -15,7 +15,6 @@ if (!firebase.apps.length) {
 }
 const db = firebase.firestore();
 
-// Helper: Parse pasted raw text into structured question objects with per-block default passage support
 const parseBlockQuestions = (rawText, defaultPassageTitle, defaultPassage, defaultIsHTML, startIdx = 1) => {
     if (!rawText.trim()) return [];
 
@@ -146,11 +145,23 @@ function App() {
         }
     });
 
+    // NEW: State for tracking complete trial history
+    const [examHistory, setExamHistory] = useState(() => {
+        try {
+            const saved = localStorage.getItem('exam_history_logs');
+            return saved ? JSON.parse(saved) : {};
+        } catch (e) {
+            return {};
+        }
+    });
+
     const [searchQuery, setSearchQuery] = useState('');
     const [selectedSubjectFilter, setSelectedSubjectFilter] = useState('All');
     const [customSubjects, setCustomSubjects] = useState(['Mathematics', 'Physics', 'Chemistry', 'Biology', 'English']);
 
-    // --- ADD EXAM FORM STATES ---
+    // --- NEW: State for Info Modal ---
+    const [selectedExamStats, setSelectedExamStats] = useState(null);
+
     const [showAddModal, setShowAddModal] = useState(false);
     const [examTitle, setExamTitle] = useState('');
     const [examType, setExamType] = useState('default');
@@ -214,7 +225,6 @@ function App() {
         }
     }, [currentView]);
 
-    // --- BLOCK CREATION HANDLERS ---
     const handleTotalQuestionsChange = (val) => {
         const count = Math.max(1, Number(val));
         setTotalQuestions(count);
@@ -231,14 +241,11 @@ function App() {
     const handleUpdateBlock = (index, field, value) => {
         const updated = [...examBlocks];
         updated[index][field] = value;
-
-        // If updating endQ of a non-final block, adjust subsequent block's startQ
         if (field === 'endQ' && index < updated.length - 1) {
             const newEnd = Math.max(updated[index].startQ, Number(value));
             updated[index].endQ = newEnd;
             updated[index + 1].startQ = newEnd + 1;
         }
-
         setExamBlocks(updated);
     };
 
@@ -246,25 +253,12 @@ function App() {
         const lastBlock = examBlocks[examBlocks.length - 1];
         const nextStart = lastBlock.endQ + 1;
         const nextEnd = Math.max(nextStart, totalQuestions);
-
-        setExamBlocks([
-            ...examBlocks,
-            {
-                id: Date.now(),
-                startQ: nextStart,
-                endQ: nextEnd,
-                passageTitle: '',
-                passage: '',
-                isHTML: false,
-                rawText: ''
-            }
-        ]);
+        setExamBlocks([...examBlocks, { id: Date.now(), startQ: nextStart, endQ: nextEnd, passageTitle: '', passage: '', isHTML: false, rawText: '' }]);
     };
 
     const handleRemoveBlock = (index) => {
         if (examBlocks.length <= 1) return;
         const updated = examBlocks.filter((_, idx) => idx !== index);
-        // Recalculate block ranges sequentially
         let currentStart = 1;
         updated.forEach((b, idx) => {
             b.startQ = currentStart;
@@ -284,22 +278,14 @@ function App() {
             return;
         }
 
-        // Compile and parse all questions from each block
         let compiledQuestions = [];
         examBlocks.forEach((block) => {
             if (block.rawText.trim()) {
-                const blockParsed = parseBlockQuestions(
-                    block.rawText,
-                    block.passageTitle,
-                    block.passage,
-                    block.isHTML,
-                    block.startQ
-                );
+                const blockParsed = parseBlockQuestions(block.rawText, block.passageTitle, block.passage, block.isHTML, block.startQ);
                 compiledQuestions = compiledQuestions.concat(blockParsed);
             }
         });
 
-        // Re-index question IDs sequentially for clean structure
         compiledQuestions = compiledQuestions.map((q, idx) => ({ ...q, id: idx + 1 }));
 
         if (compiledQuestions.length === 0) {
@@ -325,7 +311,6 @@ function App() {
             await db.collection('exams').doc(generatedId).set(newExamObj);
             setExams(prev => [newExamObj, ...prev]);
 
-            // Reset Form States
             setExamTitle('');
             setExamType('default');
             setExamSubject('');
@@ -381,8 +366,12 @@ function App() {
     };
 
     const handleDeleteQuestionFromEdit = (qIdx) => {
-        const updated = editQuestions.filter((_, idx) => idx !== qIdx).map((q, idx) => ({ ...q, id: idx + 1 }));
-        setEditQuestions(updated);
+        if (window.confirm("Are you sure you want to delete this question? This action cannot be undone.")) {
+            const updated = editQuestions
+                .filter((_, idx) => idx !== qIdx)
+                .map((q, idx) => ({ ...q, id: idx + 1 }));
+            setEditQuestions(updated);
+        }
     };
 
     const handleSaveEditedExam = async () => {
@@ -478,6 +467,24 @@ function App() {
             return updated;
         });
 
+        // NEW: Update Trial History Logic
+        const newRecord = {
+            score: finalScore,
+            total: totalQ,
+            scorePct: scorePct,
+            date: new Date().toISOString()
+        };
+
+        setExamHistory(prev => {
+            const updated = { ...prev };
+            if (!updated[activeExam.id]) updated[activeExam.id] = [];
+            updated[activeExam.id].push(newRecord);
+            try {
+                localStorage.setItem('exam_history_logs', JSON.stringify(updated));
+            } catch (e) { }
+            return updated;
+        });
+
         setCurrentView('results');
         setTimerStatus('finished');
     };
@@ -498,6 +505,53 @@ function App() {
         setInputSeconds(initialSeconds % 60);
 
         setCurrentView('exam');
+    };
+
+    const handleDeleteTrial = (examId, trialDate) => {
+        if (!window.confirm("Are you sure you want to delete this trial record?")) return;
+
+        setExamHistory(prev => {
+            const updated = { ...prev };
+            if (updated[examId]) {
+                updated[examId] = updated[examId].filter(t => t.date !== trialDate);
+                if (updated[examId].length === 0) {
+                    delete updated[examId];
+                }
+            }
+            try { localStorage.setItem('exam_history_logs', JSON.stringify(updated)); } catch (e) { }
+
+            // Recalculate high score badge
+            setHighScores(prevScores => {
+                const updatedScores = { ...prevScores };
+                if (!updated[examId] || updated[examId].length === 0) {
+                    delete updatedScores[examId];
+                } else {
+                    updatedScores[examId] = Math.max(...updated[examId].map(t => t.scorePct));
+                }
+                try { localStorage.setItem('exam_high_scores', JSON.stringify(updatedScores)); } catch (e) { }
+                return updatedScores;
+            });
+
+            return updated;
+        });
+    };
+
+    const handleClearAllTrials = (examId) => {
+        if (!window.confirm("Are you sure you want to delete ALL trial history for this exam?")) return;
+
+        setExamHistory(prev => {
+            const updated = { ...prev };
+            delete updated[examId];
+            try { localStorage.setItem('exam_history_logs', JSON.stringify(updated)); } catch (e) { }
+            return updated;
+        });
+
+        setHighScores(prev => {
+            const updated = { ...prev };
+            delete updated[examId];
+            try { localStorage.setItem('exam_high_scores', JSON.stringify(updated)); } catch (e) { }
+            return updated;
+        });
     };
 
     const exitToDashboard = () => {
@@ -600,7 +654,7 @@ function App() {
     });
 
     const getExamGradeStyling = (scorePct) => {
-        if (scorePct === undefined || scorePct === null) {
+        if (scorePct === undefined || scorePct === null || scorePct === -1) {
             return {
                 cardBg: "bg-white border-gray-200 hover:border-gray-300",
                 badgeClass: "bg-gray-100 text-gray-600 border-gray-200 inline-block px-2 py-0.5 rounded-md text-[10px] border",
@@ -635,7 +689,6 @@ function App() {
     };
     const allAvailableSubjects = Array.from(new Set([...customSubjects, ...exams.map(e => e.subject).filter(Boolean)]));
 
-    // --- VIEW: DASHBOARD ---
     if (currentView === 'dashboard') {
         return (
             <div className="min-h-screen bg-gray-50 py-8 px-4 sm:px-6 lg:px-8">
@@ -685,7 +738,7 @@ function App() {
                             <button onClick={() => { setSearchQuery(''); setSelectedSubjectFilter('All'); }} className="px-4 py-2 bg-gray-200 text-gray-800 text-sm font-medium rounded-md hover:bg-gray-300">Clear Search Filters</button>
                         </div>
                     ) : (
-                        <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 md:grid-cols-4">
+                        <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 md:grid-cols-3">
                             {filteredExams.map((exam) => {
                                 const topScorePct = highScores[exam.id];
                                 const styling = getExamGradeStyling(topScorePct);
@@ -695,8 +748,8 @@ function App() {
                                         key={exam.id}
                                         className={`rounded-xl border transition-all duration-200 flex flex-col justify-between p-3.5 relative group aspect-[2/1] min-h-[105px] ${styling.cardBg}`}
                                     >
-                                        <div className="flex justify-between items-center mb-1">
-                                            <div className="flex items-center gap-2">
+                                        <div className="flex flex-wrap justify-between items-start gap-2 mb-1">
+                                            <div className="flex flex-wrap items-center gap-2">
                                                 <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold tracking-wider bg-blue-100 text-blue-800 uppercase border border-blue-200">
                                                     {exam.subject}
                                                 </span>
@@ -717,6 +770,10 @@ function App() {
                                             </div>
 
                                             <div className="flex items-center gap-1">
+                                                {/* NEW: Info Button */}
+                                                <button onClick={() => setSelectedExamStats(exam)} title="Exam Info & History" className="p-1 text-gray-400 hover:text-blue-600 transition-colors">
+                                                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                                                </button>
                                                 <button onClick={() => handleOpenEditModal(exam)} title="Edit Exam" className="p-1 text-gray-400 hover:text-blue-600 transition-colors">
                                                     <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
                                                 </button>
@@ -743,6 +800,90 @@ function App() {
                                     </div>
                                 );
                             })}
+                        </div>
+                    )}
+
+                    {/* NEW MODAL: EXAM INFO & HISTORY */}
+                    {selectedExamStats && (
+                        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 p-4">
+                            <div className="bg-white rounded-xl shadow-2xl flex flex-col max-w-2xl w-full max-h-[90vh] overflow-hidden">
+                                <div className="p-5 border-b border-gray-200 flex justify-between items-center bg-gray-50">
+                                    <h3 className="text-xl font-bold text-gray-900">Exam Info & History</h3>
+                                    <button onClick={() => setSelectedExamStats(null)} className="text-gray-400 hover:text-gray-700">
+                                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                                    </button>
+                                </div>
+                                <div className="p-6 overflow-y-auto space-y-6 flex-1">
+                                    <div>
+                                        <h4 className="text-lg font-bold text-gray-800">{selectedExamStats.title}</h4>
+                                        <p className="text-sm text-gray-600 mt-1">{selectedExamStats.description || 'No description provided.'}</p>
+                                        <div className="mt-3 grid grid-cols-2 gap-4 text-sm">
+                                            <div><span className="font-semibold text-gray-700">Subject:</span> {selectedExamStats.subject}</div>
+                                            <div><span className="font-semibold text-gray-700">Duration:</span> {selectedExamStats.durationMinutes} mins</div>
+                                            <div><span className="font-semibold text-gray-700">Total Questions:</span> {selectedExamStats.questions?.length || 0}</div>
+                                            <div><span className="font-semibold text-gray-700">Type:</span> {selectedExamStats.type}</div>
+                                        </div>
+                                    </div>
+                                    <div className="border-t pt-4">
+                                        <div className="flex justify-between items-center mb-3">
+                                            <h4 className="font-bold text-gray-800">Trial History</h4>
+                                            {examHistory[selectedExamStats.id] && examHistory[selectedExamStats.id].length > 0 && (
+                                                <button
+                                                    onClick={() => handleClearAllTrials(selectedExamStats.id)}
+                                                    className="text-xs px-2 py-1 bg-red-50 text-red-600 hover:bg-red-100 hover:text-red-800 font-semibold rounded border border-red-200 transition-colors"
+                                                >
+                                                    Clear All History
+                                                </button>
+                                            )}
+                                        </div>
+
+                                        {(!examHistory[selectedExamStats.id] || examHistory[selectedExamStats.id].length === 0) ? (
+                                            <p className="text-sm text-gray-500">No trials recorded yet.</p>
+                                        ) : (
+                                            <div className="space-y-2">
+                                                <div className="text-sm font-semibold text-gray-600 mb-2">Total Trials: {examHistory[selectedExamStats.id].length}</div>
+                                                <div className="bg-gray-50 border border-gray-200 rounded-lg overflow-hidden">
+                                                    <table className="min-w-full divide-y divide-gray-200">
+                                                        <thead className="bg-gray-100">
+                                                            <tr>
+                                                                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
+                                                                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Score</th>
+                                                                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Percentage</th>
+                                                                <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Action</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody className="bg-white divide-y divide-gray-200">
+                                                            {[...examHistory[selectedExamStats.id]]
+                                                                .sort((a, b) => b.scorePct - a.scorePct)
+                                                                .map((trial, idx) => (
+                                                                    <tr key={idx} className="hover:bg-gray-50 transition-colors">
+                                                                        <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-900">{new Date(trial.date).toLocaleString()}</td>
+                                                                        <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-900">{trial.score} / {trial.total}</td>
+                                                                        <td className="px-4 py-2 whitespace-nowrap text-sm font-medium text-gray-900">{trial.scorePct}%</td>
+                                                                        <td className="px-4 py-2 whitespace-nowrap text-right text-sm">
+                                                                            <button
+                                                                                onClick={() => handleDeleteTrial(selectedExamStats.id, trial.date)}
+                                                                                className="text-gray-400 hover:text-red-600 transition-colors p-1"
+                                                                                title="Delete Trial"
+                                                                            >
+                                                                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                                                                                </svg>
+                                                                            </button>
+                                                                        </td>
+                                                                    </tr>
+                                                                ))}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                                <div className="p-4 border-t bg-gray-50 flex justify-end">
+                                    <button onClick={() => setSelectedExamStats(null)} className="px-4 py-2 bg-gray-900 text-white rounded-md text-sm font-medium hover:bg-gray-800">Close</button>
+                                </div>
+                            </div>
                         </div>
                     )}
 
@@ -851,7 +992,6 @@ function App() {
                                                         </div>
                                                     </div>
 
-                                                    {/* Block Passage / Table Controls */}
                                                     <div className="p-3 bg-gray-50 rounded-lg border border-gray-200 space-y-2">
                                                         <div className="flex justify-between items-center">
                                                             <label className="text-xs font-bold text-gray-800">
@@ -883,7 +1023,6 @@ function App() {
                                                         ></textarea>
                                                     </div>
 
-                                                    {/* Raw Questions Input for this Block */}
                                                     <div>
                                                         <label className="block text-xs font-bold text-gray-700 mb-1">
                                                             Questions Input for Block {bIdx + 1} (Questions {block.startQ} to {block.endQ})
@@ -1102,7 +1241,6 @@ function App() {
         );
     }
 
-    // --- VIEW: EXAM / RESULTS ---
     const isSubmitted = currentView === 'results';
     const question = activeExam.questions[currentIndex] || activeExam.questions[0];
 
@@ -1287,14 +1425,13 @@ function App() {
                                 </button>
                             </div>
                         ) : (
-                            <div className="flex flex-col gap-3 mt-4 p-3 bg-gray-50 border border-gray-200 rounded-lg">
-                                <h4 className="font-bold text-gray-800 border-b pb-1">Final Score</h4>
-                                <div className="text-2xl font-black text-center py-2 text-gray-900">
-                                    {score} / {activeExam.questions.length} ({Math.round((score / (activeExam.questions.length || 1)) * 100)}%)
+                            <div className="flex flex-col gap-3 mt-4 pt-3 border-t border-gray-200">
+                                <div className="text-base font-normal text-gray-900">
+                                    Final Score: <span className="font-bold text-red-600">{score}</span> / {activeExam.questions.length}
                                 </div>
-                                <div className="flex flex-col gap-2 mt-2">
-                                    <button onClick={() => setShowResetModal(true)} className="w-full px-4 py-2 bg-white border border-gray-300 text-gray-800 font-medium rounded-lg hover:bg-gray-50 transition-colors">Retake Exam</button>
-                                    <button onClick={openExportModal} className="w-full px-4 py-2 bg-purple-100 text-purple-800 font-medium rounded-lg hover:bg-purple-200 transition-colors flex justify-center items-center gap-2">
+                                <div className="flex flex-col gap-2 mt-1">
+                                    <button onClick={() => setShowResetModal(true)} className="w-full px-4 py-2 bg-white border border-gray-300 text-gray-800 font-medium text-sm rounded-lg hover:bg-gray-50 transition-colors">Retake Exam</button>
+                                    <button onClick={openExportModal} className="w-full px-4 py-2 bg-purple-100 text-purple-800 font-medium text-sm rounded-lg hover:bg-purple-200 transition-colors flex justify-center items-center gap-2">
                                         Export to AI
                                     </button>
                                 </div>
@@ -1306,17 +1443,17 @@ function App() {
                         <div className="bg-[#f8f9fa] border border-gray-200 rounded-lg p-5 sm:p-8 shadow-sm min-h-[400px] flex flex-col justify-between">
                             <div>
                                 {question.passage && (
-                                    <Passage 
-                                        title={question.passageTitle} 
-                                        text={question.passage} 
-                                        isHTML={question.isHTML} 
+                                    <Passage
+                                        title={question.passageTitle}
+                                        text={question.passage}
+                                        isHTML={question.isHTML}
                                     />
                                 )}
                                 <div className="mb-5 flex justify-between items-start gap-4">
                                     <div className="w-full overflow-hidden">
                                         <h2 className="text-indigo-500 text-xs font-bold uppercase tracking-wider mb-2">
-                                            {activeExam.type === 'UAT' 
-                                                ? (currentIndex < 55 ? `English Section - Question ${currentIndex + 1}` : `Mathematics Section - Question ${currentIndex + 1}`) 
+                                            {activeExam.type === 'UAT'
+                                                ? (currentIndex < 55 ? `English Section - Question ${currentIndex + 1}` : `Mathematics Section - Question ${currentIndex + 1}`)
                                                 : `Question ${currentIndex + 1}`
                                             }
                                         </h2>
@@ -1381,32 +1518,26 @@ function App() {
                                     )}
 
                                     {isSubmitted && (
-                                        <div className={`mt-6 p-4 sm:p-5 rounded-lg border text-sm sm:text-base ${answers[question.id] === question.correctAnswer
-                                                ? 'bg-emerald-50/80 border-emerald-300 text-emerald-950'
-                                                : 'bg-red-50/80 border-red-300 text-red-950'
+                                        <div className={`mt-6 p-5 rounded-lg border text-sm sm:text-base ${answers[question.id] === question.correctAnswer
+                                            ? 'bg-emerald-50/60 border-emerald-200'
+                                            : 'bg-red-50/60 border-red-200'
                                             }`}>
-                                            <div className="flex items-center gap-2 font-bold mb-2 text-sm sm:text-base">
+                                            <div className="flex items-center gap-2 mb-3">
                                                 {answers[question.id] === question.correctAnswer ? (
-                                                    <span className="text-emerald-700 flex items-center gap-1.5">
-                                                        <svg className="w-5 h-5 stroke-[2.5]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                                                        </svg>
-                                                        Correct
+                                                    <span className="font-bold text-emerald-700 flex items-center gap-1.5 text-base">
+                                                        ✓ Correct
                                                     </span>
                                                 ) : (
-                                                    <span className="text-red-700 flex items-center gap-1.5">
-                                                        <svg className="w-5 h-5 stroke-[2.5]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                                                        </svg>
-                                                        Incorrect
+                                                    <span className="font-bold text-red-700 flex items-center gap-1.5 text-base">
+                                                        ✕ Incorrect
                                                     </span>
                                                 )}
-                                                <span className="text-gray-600 font-normal text-xs sm:text-sm ml-1">
+                                                <span className="text-gray-500 text-sm">
                                                     (Correct Answer: {question.correctAnswer})
                                                 </span>
                                             </div>
-                                            <div className="font-bold text-gray-900 mb-1">Explanation:</div>
-                                            <div className="text-gray-800 leading-relaxed text-sm sm:text-base">
+                                            <div className="font-bold text-gray-900 mb-1.5">Explanation:</div>
+                                            <div className="text-gray-800 leading-relaxed">
                                                 <MathText text={question.explanation || "No detailed explanation available for this question."} />
                                             </div>
                                         </div>
