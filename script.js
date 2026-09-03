@@ -29,13 +29,17 @@ const parseRawQuestions = (rawText) => {
         let questionText = "";
         const options = [];
         let correctAnswer = "";
+        let explanation = "";
 
         lines.forEach(line => {
             const ansMatch = line.match(/^(?:Answer|Ans|Correct)[:\s]*([A-D])/i);
             const optMatch = line.match(/^([A-D])[\.\)]\s*(.+)/i);
+            const expMatch = line.match(/^(?:Explanation|Exp)[:\s]*(.+)/i);
 
             if (ansMatch) {
                 correctAnswer = ansMatch[1].toUpperCase();
+            } else if (expMatch) {
+                explanation = expMatch[1].trim();
             } else if (optMatch) {
                 options.push({
                     id: optMatch[1].toUpperCase(),
@@ -51,7 +55,8 @@ const parseRawQuestions = (rawText) => {
                 id: idx + 1,
                 text: questionText,
                 options: options,
-                correctAnswer: correctAnswer || options[0].id
+                correctAnswer: correctAnswer || options[0].id,
+                explanation: explanation || ""
             });
         }
     });
@@ -154,6 +159,7 @@ function App() {
     const [inputSeconds, setInputSeconds] = useState(0);
 
     const [showResetModal, setShowResetModal] = useState(false);
+    const [showExitConfirmModal, setShowExitConfirmModal] = useState(false);
     const [showExportModal, setShowExportModal] = useState(false);
     const [exportSelectedIds, setExportSelectedIds] = useState(new Set());
     const [copySuccess, setCopySuccess] = useState(false);
@@ -262,7 +268,8 @@ function App() {
                 { id: "C", text: "Option C" },
                 { id: "D", text: "Option D" }
             ],
-            correctAnswer: "A"
+            correctAnswer: "A",
+            explanation: ""
         };
         setEditQuestions([...editQuestions, newQ]);
     };
@@ -321,6 +328,7 @@ function App() {
         setInputMinutes(Math.floor((initialSeconds % 3600) / 60));
         setInputSeconds(initialSeconds % 60);
         setTimeLeft(initialSeconds);
+        setTimerStatus('running'); // Auto-start the timer
         setCurrentView('exam');
     };
 
@@ -376,7 +384,7 @@ function App() {
         setScore(0);
         setCurrentIndex(0);
         setShowResetModal(false);
-        setTimerStatus('idle');
+        setTimerStatus('running'); // Auto-start the timer on retake
 
         const initialSeconds = activeExam.durationMinutes * 60;
         setTimeLeft(initialSeconds);
@@ -397,7 +405,19 @@ function App() {
         setTimerStatus('idle');
         setCurrentView('dashboard');
     };
+    const handleBackToDashboardClick = () => {
+        if (currentView === 'exam') {
+            setShowExitConfirmModal(true);
+        } else {
+            exitToDashboard();
+        }
+    };
 
+    const handleConfirmExitAndSubmit = () => {
+        handleSubmit();
+        setShowExitConfirmModal(false);
+        exitToDashboard();
+    };
     const openExportModal = () => {
         const initialSelected = new Set();
         activeExam.questions.forEach(q => {
@@ -561,7 +581,6 @@ function App() {
                             <button onClick={() => { setSearchQuery(''); setSelectedSubjectFilter('All'); }} className="px-4 py-2 bg-gray-200 text-gray-800 text-sm font-medium rounded-md hover:bg-gray-300">Clear Search Filters</button>
                         </div>
                     ) : (
-                        /* Slim 4:1 Ratio Horizontal Rectangle Grid Layout */
                         <div className="grid gap-4 grid-cols-1 md:grid-cols-2">
                             {filteredExams.map((exam) => {
                                 const topScorePct = highScores[exam.id];
@@ -572,7 +591,6 @@ function App() {
                                         key={exam.id}
                                         className={`rounded-xl border transition-all duration-200 flex flex-col justify-between p-3.5 relative group aspect-[4/1] min-h-[105px] ${styling.cardBg}`}
                                     >
-                                        {/* Top Line: Subject Tag + Edit/Delete + Score Badge */}
                                         <div className="flex justify-between items-center mb-1">
                                             <div className="flex items-center gap-2">
                                                 <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold tracking-wider bg-blue-100 text-blue-800 uppercase border border-blue-200">
@@ -589,7 +607,6 @@ function App() {
                                                 )}
                                             </div>
 
-                                            {/* Action Buttons */}
                                             <div className="flex items-center gap-1">
                                                 <button onClick={() => handleOpenEditModal(exam)} title="Edit Exam" className="p-1 text-gray-400 hover:text-blue-600 transition-colors">
                                                     <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
@@ -600,13 +617,11 @@ function App() {
                                             </div>
                                         </div>
 
-                                        {/* Card Title & Clamped Short Description */}
                                         <div className="my-auto pr-1">
                                             <h3 className="text-base font-bold text-gray-900 leading-tight truncate">{exam.title}</h3>
                                             <p className="text-gray-600 text-xs line-clamp-1 mt-0.5">{exam.description || 'No description provided.'}</p>
                                         </div>
 
-                                        {/* Footer Row */}
                                         <div className="border-t border-gray-200/60 pt-2 flex items-center justify-between mt-1">
                                             <div className="text-xs font-medium text-gray-600 flex items-center gap-1">
                                                 <svg className="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
@@ -686,7 +701,7 @@ function App() {
                                             value={rawQuestionsInput}
                                             onChange={(e) => setRawQuestionsInput(e.target.value)}
                                             rows="8"
-                                            placeholder={`Paste text here in format:\n\n1. What is 2 + 2?\nA) 3\nB) 4\nC) 5\nD) 6\nAnswer: B`}
+                                            placeholder={`Paste text here in format:\n\n1. What is 2 + 2?\nA) 3\nB) 4\nC) 5\nD) 6\nAnswer: B\nExplanation: Simple arithmetic addition.`}
                                             className="w-full border border-gray-300 rounded-md p-3 font-mono text-xs text-gray-800 focus:ring-2 focus:ring-blue-500 outline-none"
                                         ></textarea>
                                     </div>
@@ -705,6 +720,9 @@ function App() {
                                                                 </span>
                                                             ))}
                                                         </div>
+                                                        {q.explanation && (
+                                                            <p className="text-gray-500 italic mt-1">Exp: {q.explanation}</p>
+                                                        )}
                                                     </div>
                                                 ))}
                                             </div>
@@ -809,6 +827,17 @@ function App() {
                                                             {q.options.map(o => <option key={o.id} value={o.id}>{o.id}</option>)}
                                                         </select>
                                                     </div>
+
+                                                    <div>
+                                                        <label className="block text-xs font-semibold text-gray-700 mb-1">Explanation:</label>
+                                                        <textarea
+                                                            value={q.explanation || ''}
+                                                            onChange={(e) => handleUpdateQuestionField(qIdx, 'explanation', e.target.value)}
+                                                            rows="2"
+                                                            className="w-full border border-gray-300 rounded p-2 text-xs focus:ring-1 focus:ring-blue-500 outline-none"
+                                                            placeholder="Explanation for the correct answer..."
+                                                        ></textarea>
+                                                    </div>
                                                 </div>
                                             ))}
                                         </div>
@@ -875,6 +904,18 @@ function App() {
                     </div>
                 </div>
             )}
+            {showExitConfirmModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 transition-opacity">
+                    <div className="bg-white rounded-lg shadow-xl p-6 max-w-sm w-full mx-4">
+                        <h3 className="text-lg font-bold text-gray-900 mb-2">Submit & Exit?</h3>
+                        <p className="text-gray-600 text-sm mb-6">Returning to the dashboard will submit your exam right away and record your score. Are you sure?</p>
+                        <div className="flex justify-end gap-3">
+                            <button onClick={() => setShowExitConfirmModal(false)} className="px-4 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-md text-sm font-medium">Cancel</button>
+                            <button onClick={handleConfirmExitAndSubmit} className="px-4 py-2 text-white bg-red-600 hover:bg-red-700 rounded-md text-sm font-medium">Yes, Submit & Exit</button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {showExportModal && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 transition-opacity p-4">
@@ -919,7 +960,7 @@ function App() {
 
             <div className="max-w-7xl mx-auto">
                 <div className="mb-4">
-                    <button onClick={exitToDashboard} className="text-sm font-medium text-gray-500 hover:text-gray-900 flex items-center gap-1 transition-colors">
+                    <button onClick={handleBackToDashboardClick} className="text-sm font-medium text-gray-500 hover:text-gray-900 flex items-center gap-1 transition-colors">
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path></svg>
                         Back to Dashboard
                     </button>
@@ -957,7 +998,11 @@ function App() {
                                         <button onClick={startTimer} className="p-1 ml-1 rounded-full text-green-600 hover:bg-green-50"><svg className="w-5 h-5 fill-current" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" /></svg></button>
                                     )}
                                     {timerStatus === 'running' && (
-                                        <button onClick={() => setTimerStatus('paused')} className="p-1 ml-1 rounded-full text-amber-500 hover:bg-amber-50"><svg className="w-5 h-5 fill-current" viewBox="0 0 20 20"><path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 0 0116 0zM7 8a1 1 0 012 0v4a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v4a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" /></svg></button>
+                                        <button onClick={() => setTimerStatus('paused')} className="p-1 ml-1 rounded-full text-amber-500 hover:bg-amber-50">
+                                            <svg className="w-5 h-5 fill-current" viewBox="0 0 24 24">
+                                                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z" />
+                                            </svg>
+                                        </button>
                                     )}
                                     {timerStatus === 'paused' && (
                                         <button onClick={() => setTimerStatus('running')} className="p-1 ml-1 rounded-full text-blue-500 hover:bg-blue-50"><svg className="w-5 h-5 fill-current" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" /></svg></button>
@@ -1001,7 +1046,7 @@ function App() {
                         {!isSubmitted ? (
                             <div className="flex flex-col gap-3">
                                 <div className="text-sm text-gray-600 mb-1">Answered: <span className="font-bold">{Object.keys(answers).length}</span> / {activeExam.questions.length}</div>
-                                <button onClick={handleSubmit} className="w-full px-4 py-3 bg-gray-900 text-white font-medium rounded-lg hover:bg-gray-800 transition-colors shadow-sm">
+                                <button onClick={handleSubmit} className="w-full px-4 py-3 bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 transition-colors shadow-sm">
                                     Submit Exam
                                 </button>
                             </div>
@@ -1057,15 +1102,85 @@ function App() {
                                             </label>
                                         );
                                     })}
+                                    {!isSubmitted && answers[question.id] && (
+                                        <button
+                                            onClick={() => {
+                                                const newAnswers = { ...answers };
+                                                delete newAnswers[question.id];
+                                                setAnswers(newAnswers);
+                                            }}
+                                            className="mt-3 text-sm text-gray-500 hover:text-gray-700 flex items-center gap-1.5 font-medium transition-colors cursor-pointer"
+                                        >
+                                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                                            </svg>
+                                            Clear Choice
+                                        </button>
+                                    )}
+
+                                    {/* FLAG REASON FIELD (Shows when user flags question) */}
+                                    {flagged[question.id] && (
+                                        <div className="mt-5">
+                                            <label className="block text-sm font-medium text-[#c07c24] mb-2">
+                                                Why did you flag this question? (Helps AI explain it to you later)
+                                            </label>
+                                            <textarea
+                                                value={flagReasons[question.id] || ''}
+                                                onChange={(e) => setFlagReasons({ ...flagReasons, [question.id]: e.target.value })}
+                                                placeholder="E.g., I was confused between options B and C because..."
+                                                rows="2"
+                                                className="w-full border border-yellow-400 rounded-md p-3 text-sm text-gray-800 bg-[#fffeeb] focus:outline-none focus:ring-0 resize-y"
+                                            />
+                                        </div>
+                                    )}
+
+                                    {/* POST-SUBMISSION EXPLANATION CARD */}
+                                    {isSubmitted && (
+                                        <div className={`mt-6 p-4 sm:p-5 rounded-lg border text-sm sm:text-base ${answers[question.id] === question.correctAnswer
+                                                ? 'bg-emerald-50/80 border-emerald-300 text-emerald-950'
+                                                : 'bg-red-50/80 border-red-300 text-red-950'
+                                            }`}>
+                                            <div className="flex items-center gap-2 font-bold mb-2 text-sm sm:text-base">
+                                                {answers[question.id] === question.correctAnswer ? (
+                                                    <span className="text-emerald-700 flex items-center gap-1.5">
+                                                        <svg className="w-5 h-5 stroke-[2.5]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                                                        </svg>
+                                                        Correct
+                                                    </span>
+                                                ) : (
+                                                    <span className="text-red-700 flex items-center gap-1.5">
+                                                        <svg className="w-5 h-5 stroke-[2.5]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                                                        </svg>
+                                                        Incorrect
+                                                    </span>
+                                                )}
+                                                <span className="text-gray-600 font-normal text-xs sm:text-sm ml-1">
+                                                    (Correct Answer: {question.correctAnswer})
+                                                </span>
+                                            </div>
+                                            <div className="font-bold text-gray-900 mb-1">Explanation:</div>
+                                            <div className="text-gray-800 leading-relaxed text-sm sm:text-base">
+                                                <MathText text={question.explanation || "No detailed explanation available for this question."} />
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
                             </div>
 
                             <div className="mt-8 flex justify-between border-t border-gray-200 pt-5">
                                 <button onClick={() => setCurrentIndex(prev => Math.max(0, prev - 1))} disabled={currentIndex === 0} className={`px-5 py-2.5 rounded-lg font-medium flex items-center gap-2 ${currentIndex === 0 ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-white border border-gray-300 text-gray-700 hover:bg-gray-50'}`}>
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 19l-7-7 7-7" />
+                                    </svg>
                                     Previous
                                 </button>
-                                <button onClick={() => setCurrentIndex(prev => Math.min(activeExam.questions.length - 1, prev + 1))} disabled={currentIndex === activeExam.questions.length - 1} className={`px-5 py-2.5 rounded-lg font-medium flex items-center gap-2 ${currentIndex === activeExam.questions.length - 1 ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-gray-900 text-white hover:bg-gray-800'}`}>
+                                <button onClick={() => setCurrentIndex(prev => Math.min(activeExam.questions.length - 1, prev + 1))} disabled={currentIndex === activeExam.questions.length - 1} className={`px-5 py-2.5 rounded-lg font-medium flex items-center gap-2 ${currentIndex === activeExam.questions.length - 1 ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`}>
                                     Next
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 5l7 7-7 7" />
+                                    </svg>
                                 </button>
                             </div>
                         </div>
