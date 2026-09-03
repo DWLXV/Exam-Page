@@ -15,14 +15,14 @@ if (!firebase.apps.length) {
 }
 const db = firebase.firestore();
 
-// Helper: Parse pasted raw text into structured question objects
-const parseRawQuestions = (rawText) => {
+// Helper: Parse pasted raw text into structured question objects with per-block default passage support
+const parseBlockQuestions = (rawText, defaultPassageTitle, defaultPassage, defaultIsHTML, startIdx = 1) => {
     if (!rawText.trim()) return [];
 
     const blocks = rawText.trim().split(/\n\s*\n/);
     const parsedQuestions = [];
 
-    blocks.forEach((block, idx) => {
+    blocks.forEach((block) => {
         const lines = block.split('\n').map(l => l.trim()).filter(Boolean);
         if (lines.length < 2) return;
 
@@ -30,16 +30,33 @@ const parseRawQuestions = (rawText) => {
         const options = [];
         let correctAnswer = "";
         let explanation = "";
+        let passageTitle = defaultPassageTitle || "";
+        let passage = defaultPassage || "";
+        let isHTML = defaultIsHTML || false;
+        let image = "";
 
         lines.forEach(line => {
             const ansMatch = line.match(/^(?:Answer|Ans|Correct)[:\s]*([A-D])/i);
             const optMatch = line.match(/^([A-D])[\.\)]\s*(.+)/i);
             const expMatch = line.match(/^(?:Explanation|Exp)[:\s]*(.+)/i);
+            const pTitleMatch = line.match(/^(?:Passage Title|Title)[:\s]*(.+)/i);
+            const pHtmlMatch = line.match(/^(?:Passage HTML|HTML Passage|Table)[:\s]*(.+)/i);
+            const pMatch = line.match(/^(?:Passage)[:\s]*(.+)/i);
+            const imgMatch = line.match(/^(?:Image|Img)[:\s]*(.+)/i);
 
             if (ansMatch) {
                 correctAnswer = ansMatch[1].toUpperCase();
             } else if (expMatch) {
                 explanation = expMatch[1].trim();
+            } else if (pTitleMatch) {
+                passageTitle = pTitleMatch[1].trim();
+            } else if (pHtmlMatch) {
+                passage = pHtmlMatch[1].trim();
+                isHTML = true;
+            } else if (pMatch) {
+                passage = pMatch[1].trim();
+            } else if (imgMatch) {
+                image = imgMatch[1].trim();
             } else if (optMatch) {
                 options.push({
                     id: optMatch[1].toUpperCase(),
@@ -52,11 +69,15 @@ const parseRawQuestions = (rawText) => {
 
         if (questionText && options.length > 0) {
             parsedQuestions.push({
-                id: idx + 1,
+                id: startIdx + parsedQuestions.length,
                 text: questionText,
                 options: options,
                 correctAnswer: correctAnswer || options[0].id,
-                explanation: explanation || ""
+                explanation: explanation || "",
+                passageTitle: passageTitle || "",
+                passage: passage || "",
+                isHTML: isHTML || false,
+                image: image || ""
             });
         }
     });
@@ -93,7 +114,7 @@ const Passage = ({ title, text, isHTML }) => {
     return (
         <div className="mb-6 bg-blue-50 border border-blue-200 rounded-lg overflow-hidden shadow-sm">
             <button onClick={() => setIsOpen(!isOpen)} className="w-full px-5 py-3 flex justify-between items-center bg-blue-100 hover:bg-blue-200 transition-colors text-blue-900 font-bold focus:outline-none text-left">
-                <span>{title}</span>
+                <span>{title || "Reading Passage / Reference Data"}</span>
                 <svg className={`w-5 h-5 transform transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
             </button>
             {isOpen && (
@@ -116,7 +137,6 @@ function App() {
     const [flagReasons, setFlagReasons] = useState({});
     const [score, setScore] = useState(0);
 
-    // High Scores State persistent in localStorage
     const [highScores, setHighScores] = useState(() => {
         try {
             const saved = localStorage.getItem('exam_high_scores');
@@ -126,31 +146,30 @@ function App() {
         }
     });
 
-    // Search & Filter State
     const [searchQuery, setSearchQuery] = useState('');
     const [selectedSubjectFilter, setSelectedSubjectFilter] = useState('All');
     const [customSubjects, setCustomSubjects] = useState(['Mathematics', 'Physics', 'Chemistry', 'Biology', 'English']);
 
-    // Add Modal State
+    // --- ADD EXAM FORM STATES ---
     const [showAddModal, setShowAddModal] = useState(false);
     const [examTitle, setExamTitle] = useState('');
+    const [examType, setExamType] = useState('default');
     const [examSubject, setExamSubject] = useState('');
     const [examDuration, setExamDuration] = useState(60);
     const [examDescription, setExamDescription] = useState('');
-    const [rawQuestionsInput, setRawQuestionsInput] = useState('');
-    const [parsedQuestions, setParsedQuestions] = useState([]);
+    const [totalQuestions, setTotalQuestions] = useState(60);
+    const [examBlocks, setExamBlocks] = useState([
+        { id: 1, startQ: 1, endQ: 60, passageTitle: '', passage: '', isHTML: false, rawText: '' }
+    ]);
     const [isSavingExam, setIsSavingExam] = useState(false);
 
-    // Edit Modal State
     const [editingExam, setEditingExam] = useState(null);
     const [editQuestions, setEditQuestions] = useState([]);
     const [isUpdatingExam, setIsUpdatingExam] = useState(false);
 
-    // Delete Modal State
     const [examToDelete, setExamToDelete] = useState(null);
     const [isDeleting, setIsDeleting] = useState(false);
 
-    // Timer states
     const [timerStatus, setTimerStatus] = useState('idle');
     const [timeLeft, setTimeLeft] = useState(0);
     const [isTimerHidden, setIsTimerHidden] = useState(false);
@@ -164,7 +183,6 @@ function App() {
     const [exportSelectedIds, setExportSelectedIds] = useState(new Set());
     const [copySuccess, setCopySuccess] = useState(false);
 
-    // Fetch exams from Firestore
     useEffect(() => {
         const fetchExams = async () => {
             try {
@@ -194,16 +212,98 @@ function App() {
         if (currentView !== 'dashboard') {
             window.scrollTo({ top: 0, behavior: 'smooth' });
         }
-    }, [currentIndex, currentView]);
+    }, [currentView]);
 
-    const handleParseText = () => {
-        const result = parseRawQuestions(rawQuestionsInput);
-        setParsedQuestions(result);
+    // --- BLOCK CREATION HANDLERS ---
+    const handleTotalQuestionsChange = (val) => {
+        const count = Math.max(1, Number(val));
+        setTotalQuestions(count);
+        setExamBlocks(prev => {
+            if (prev.length === 1) {
+                return [{ ...prev[0], endQ: count }];
+            }
+            const updated = [...prev];
+            updated[updated.length - 1].endQ = count;
+            return updated;
+        });
+    };
+
+    const handleUpdateBlock = (index, field, value) => {
+        const updated = [...examBlocks];
+        updated[index][field] = value;
+
+        // If updating endQ of a non-final block, adjust subsequent block's startQ
+        if (field === 'endQ' && index < updated.length - 1) {
+            const newEnd = Math.max(updated[index].startQ, Number(value));
+            updated[index].endQ = newEnd;
+            updated[index + 1].startQ = newEnd + 1;
+        }
+
+        setExamBlocks(updated);
+    };
+
+    const handleAddBlock = () => {
+        const lastBlock = examBlocks[examBlocks.length - 1];
+        const nextStart = lastBlock.endQ + 1;
+        const nextEnd = Math.max(nextStart, totalQuestions);
+
+        setExamBlocks([
+            ...examBlocks,
+            {
+                id: Date.now(),
+                startQ: nextStart,
+                endQ: nextEnd,
+                passageTitle: '',
+                passage: '',
+                isHTML: false,
+                rawText: ''
+            }
+        ]);
+    };
+
+    const handleRemoveBlock = (index) => {
+        if (examBlocks.length <= 1) return;
+        const updated = examBlocks.filter((_, idx) => idx !== index);
+        // Recalculate block ranges sequentially
+        let currentStart = 1;
+        updated.forEach((b, idx) => {
+            b.startQ = currentStart;
+            if (idx === updated.length - 1) {
+                b.endQ = Math.max(currentStart, totalQuestions);
+            } else if (b.endQ < currentStart) {
+                b.endQ = currentStart + 5;
+            }
+            currentStart = b.endQ + 1;
+        });
+        setExamBlocks(updated);
     };
 
     const handleSaveExamToFirestore = async () => {
-        if (!examTitle || !examSubject || parsedQuestions.length === 0) {
-            alert("Please provide a Title, Subject, and parse at least 1 valid question.");
+        if (!examTitle || !examSubject) {
+            alert("Please provide an Exam Title and Subject.");
+            return;
+        }
+
+        // Compile and parse all questions from each block
+        let compiledQuestions = [];
+        examBlocks.forEach((block) => {
+            if (block.rawText.trim()) {
+                const blockParsed = parseBlockQuestions(
+                    block.rawText,
+                    block.passageTitle,
+                    block.passage,
+                    block.isHTML,
+                    block.startQ
+                );
+                compiledQuestions = compiledQuestions.concat(blockParsed);
+            }
+        });
+
+        // Re-index question IDs sequentially for clean structure
+        compiledQuestions = compiledQuestions.map((q, idx) => ({ ...q, id: idx + 1 }));
+
+        if (compiledQuestions.length === 0) {
+            alert("Please paste and enter valid questions in at least one block.");
             return;
         }
 
@@ -213,10 +313,11 @@ function App() {
         const newExamObj = {
             id: generatedId,
             title: examTitle,
+            type: examType,
             subject: examSubject,
             durationMinutes: Number(examDuration),
             description: examDescription,
-            questions: parsedQuestions,
+            questions: compiledQuestions,
             createdAt: firebase.firestore.FieldValue.serverTimestamp()
         };
 
@@ -224,15 +325,17 @@ function App() {
             await db.collection('exams').doc(generatedId).set(newExamObj);
             setExams(prev => [newExamObj, ...prev]);
 
+            // Reset Form States
             setExamTitle('');
+            setExamType('default');
             setExamSubject('');
             setExamDuration(60);
             setExamDescription('');
-            setRawQuestionsInput('');
-            setParsedQuestions([]);
+            setTotalQuestions(60);
+            setExamBlocks([{ id: 1, startQ: 1, endQ: 60, passageTitle: '', passage: '', isHTML: false, rawText: '' }]);
             setShowAddModal(false);
 
-            alert("Exam added and published successfully!");
+            alert(`Exam successfully saved with ${compiledQuestions.length} questions!`);
         } catch (error) {
             console.error("Error saving exam to Firestore: ", error);
             alert("Failed to save exam.");
@@ -262,6 +365,9 @@ function App() {
         const newQ = {
             id: editQuestions.length + 1,
             text: "New Question Text",
+            passageTitle: "",
+            passage: "",
+            isHTML: false,
             options: [
                 { id: "A", text: "Option A" },
                 { id: "B", text: "Option B" },
@@ -328,7 +434,7 @@ function App() {
         setInputMinutes(Math.floor((initialSeconds % 3600) / 60));
         setInputSeconds(initialSeconds % 60);
         setTimeLeft(initialSeconds);
-        setTimerStatus('running'); // Auto-start the timer
+        setTimerStatus('running');
         setCurrentView('exam');
     };
 
@@ -359,7 +465,6 @@ function App() {
         });
         setScore(finalScore);
 
-        // Update High Score calculation (percentage)
         const totalQ = activeExam.questions.length || 1;
         const scorePct = Math.round((finalScore / totalQ) * 100);
 
@@ -384,7 +489,7 @@ function App() {
         setScore(0);
         setCurrentIndex(0);
         setShowResetModal(false);
-        setTimerStatus('running'); // Auto-start the timer on retake
+        setTimerStatus('running');
 
         const initialSeconds = activeExam.durationMinutes * 60;
         setTimeLeft(initialSeconds);
@@ -405,6 +510,7 @@ function App() {
         setTimerStatus('idle');
         setCurrentView('dashboard');
     };
+
     const handleBackToDashboardClick = () => {
         if (currentView === 'exam') {
             setShowExitConfirmModal(true);
@@ -418,6 +524,7 @@ function App() {
         setShowExitConfirmModal(false);
         exitToDashboard();
     };
+
     const openExportModal = () => {
         const initialSelected = new Set();
         activeExam.questions.forEach(q => {
@@ -483,7 +590,6 @@ function App() {
         document.body.removeChild(textArea);
     };
 
-    // Filter Logic
     const availableSubjects = ['All', ...new Set(exams.map(e => e.subject).filter(Boolean))];
     const filteredExams = exams.filter(exam => {
         const matchesSearch = exam.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -493,7 +599,6 @@ function App() {
         return matchesSearch && matchesSubject;
     });
 
-    // Helper for Grade Style logic (with percentage fill gradients)
     const getExamGradeStyling = (scorePct) => {
         if (scorePct === undefined || scorePct === null) {
             return {
@@ -549,7 +654,6 @@ function App() {
                         </button>
                     </header>
 
-                    {/* Search & Subject Filter Bar */}
                     <div className="mb-6 bg-white p-3 rounded-xl border border-gray-200 shadow-sm flex flex-col sm:flex-row gap-3 items-center justify-between">
                         <div className="relative w-full sm:flex-1">
                             <svg className="w-4 h-4 absolute left-3 top-2.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
@@ -581,7 +685,7 @@ function App() {
                             <button onClick={() => { setSearchQuery(''); setSelectedSubjectFilter('All'); }} className="px-4 py-2 bg-gray-200 text-gray-800 text-sm font-medium rounded-md hover:bg-gray-300">Clear Search Filters</button>
                         </div>
                     ) : (
-                        <div className="grid gap-4 grid-cols-1 md:grid-cols-2">
+                        <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 md:grid-cols-4">
                             {filteredExams.map((exam) => {
                                 const topScorePct = highScores[exam.id];
                                 const styling = getExamGradeStyling(topScorePct);
@@ -589,13 +693,18 @@ function App() {
                                 return (
                                     <div
                                         key={exam.id}
-                                        className={`rounded-xl border transition-all duration-200 flex flex-col justify-between p-3.5 relative group aspect-[4/1] min-h-[105px] ${styling.cardBg}`}
+                                        className={`rounded-xl border transition-all duration-200 flex flex-col justify-between p-3.5 relative group aspect-[2/1] min-h-[105px] ${styling.cardBg}`}
                                     >
                                         <div className="flex justify-between items-center mb-1">
                                             <div className="flex items-center gap-2">
                                                 <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold tracking-wider bg-blue-100 text-blue-800 uppercase border border-blue-200">
                                                     {exam.subject}
                                                 </span>
+                                                {exam.type === 'UAT' && (
+                                                    <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold tracking-wider bg-purple-100 text-purple-800 uppercase border border-purple-200">
+                                                        UAT
+                                                    </span>
+                                                )}
                                                 {styling.label && (
                                                     <span
                                                         className={styling.badgeClass}
@@ -637,32 +746,36 @@ function App() {
                         </div>
                     )}
 
-                    {/* Modal: Add New Exam */}
+                    {/* MODAL: ADD NEW EXAM (BLOCK-BASED) */}
                     {showAddModal && (
                         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 p-4">
-                            <div className="bg-white rounded-xl shadow-2xl flex flex-col max-w-4xl w-full max-h-[90vh] overflow-hidden">
+                            <div className="bg-white rounded-xl shadow-2xl flex flex-col max-w-5xl w-full max-h-[92vh] overflow-hidden">
                                 <div className="p-5 border-b border-gray-200 flex justify-between items-center bg-gray-50">
-                                    <h3 className="text-xl font-bold text-gray-900">Add New Exam to Database</h3>
+                                    <div>
+                                        <h3 className="text-xl font-bold text-gray-900">Add New Exam (Block Builder)</h3>
+                                        <p className="text-xs text-gray-500 mt-0.5">Configure exam details and organize questions into extendable passage blocks.</p>
+                                    </div>
                                     <button onClick={() => setShowAddModal(false)} className="text-gray-400 hover:text-gray-700">
                                         <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                                     </button>
                                 </div>
 
                                 <div className="p-6 overflow-y-auto space-y-6 flex-1">
-                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                    {/* Exam Metadata Inputs */}
+                                    <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4 bg-gray-50 p-4 rounded-lg border border-gray-200">
                                         <div>
-                                            <label className="block text-sm font-semibold text-gray-700 mb-1">Exam Title *</label>
-                                            <input type="text" value={examTitle} onChange={(e) => setExamTitle(e.target.value)} placeholder="e.g. AAU Model Exam 1" className="w-full border border-gray-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
+                                            <label className="block text-xs font-bold text-gray-700 mb-1">Exam Title *</label>
+                                            <input type="text" value={examTitle} onChange={(e) => setExamTitle(e.target.value)} placeholder="e.g. Model Exam 2" className="w-full border border-gray-300 rounded-md p-2 text-xs focus:ring-2 focus:ring-blue-500 outline-none bg-white" />
                                         </div>
                                         <div>
-                                            <label className="block text-sm font-semibold text-gray-700 mb-1">Subject</label>
-                                            <div className="flex gap-2">
+                                            <label className="block text-xs font-bold text-gray-700 mb-1">Subject *</label>
+                                            <div className="flex gap-1">
                                                 <select
                                                     value={examSubject}
                                                     onChange={(e) => setExamSubject(e.target.value)}
-                                                    className="w-full border border-gray-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white"
+                                                    className="w-full border border-gray-300 rounded-md p-2 text-xs focus:ring-2 focus:ring-blue-500 outline-none bg-white"
                                                 >
-                                                    <option value="" disabled>Select subject...</option>
+                                                    <option value="" disabled>Select...</option>
                                                     {allAvailableSubjects.map(sub => <option key={sub} value={sub}>{sub}</option>)}
                                                 </select>
                                                 <button
@@ -674,78 +787,146 @@ function App() {
                                                             setExamSubject(newSub.trim());
                                                         }
                                                     }}
-                                                    className="px-3 bg-blue-100 hover:bg-blue-200 text-blue-700 font-bold rounded-md border border-blue-200 transition-colors"
-                                                    title="Add Custom Subject"
+                                                    className="px-2 bg-blue-100 hover:bg-blue-200 text-blue-700 font-bold rounded border border-blue-200 text-xs"
                                                 >+</button>
                                             </div>
                                         </div>
                                         <div>
-                                            <label className="block text-sm font-semibold text-gray-700 mb-1">Duration (Minutes)</label>
-                                            <input type="number" value={examDuration} onChange={(e) => setExamDuration(e.target.value)} min="1" className="w-full border border-gray-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
+                                            <label className="block text-xs font-bold text-gray-700 mb-1">Duration (Mins)</label>
+                                            <input type="number" value={examDuration} onChange={(e) => setExamDuration(e.target.value)} min="1" className="w-full border border-gray-300 rounded-md p-2 text-xs focus:ring-2 focus:ring-blue-500 outline-none bg-white" />
+                                        </div>
+                                        <div>
+                                            <label className="block text-xs font-bold text-gray-700 mb-1">Exam Type</label>
+                                            <select value={examType} onChange={(e) => setExamType(e.target.value)} className="w-full border border-gray-300 rounded-md p-2 text-xs focus:ring-2 focus:ring-blue-500 outline-none bg-white">
+                                                <option value="default">Default</option>
+                                                <option value="UAT">UAT</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label className="block text-xs font-bold text-gray-700 mb-1">Total Exam Qs</label>
+                                            <input type="number" value={totalQuestions} onChange={(e) => handleTotalQuestionsChange(e.target.value)} min="1" className="w-full border border-gray-300 rounded-md p-2 text-xs font-bold text-blue-700 focus:ring-2 focus:ring-blue-500 outline-none bg-white" />
                                         </div>
                                     </div>
 
                                     <div>
-                                        <label className="block text-sm font-semibold text-gray-700 mb-1">Description</label>
-                                        <textarea value={examDescription} onChange={(e) => setExamDescription(e.target.value)} rows="2" placeholder="Brief details about this exam..." className="w-full border border-gray-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none"></textarea>
+                                        <label className="block text-xs font-bold text-gray-700 mb-1">Description</label>
+                                        <input type="text" value={examDescription} onChange={(e) => setExamDescription(e.target.value)} placeholder="Brief details or instructions..." className="w-full border border-gray-300 rounded-md p-2 text-xs focus:ring-2 focus:ring-blue-500 outline-none" />
                                     </div>
 
+                                    {/* BLOCK BUILDER SECTION */}
                                     <div className="border-t pt-4">
-                                        <div className="flex justify-between items-center mb-2">
-                                            <label className="block text-sm font-semibold text-gray-700">Paste Raw Questions Text</label>
-                                            <button onClick={handleParseText} className="px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded">
-                                                Parse Raw Text
-                                            </button>
+                                        <div className="flex justify-between items-center mb-3">
+                                            <h4 className="font-bold text-gray-900 text-sm uppercase tracking-wide">Question Blocks & Extendable Passages</h4>
+                                            <span className="text-xs text-gray-500">Organize questions into grouped blocks with shared references.</span>
                                         </div>
-                                        <textarea
-                                            value={rawQuestionsInput}
-                                            onChange={(e) => setRawQuestionsInput(e.target.value)}
-                                            rows="8"
-                                            placeholder={`Paste text here in format:\n\n1. What is 2 + 2?\nA) 3\nB) 4\nC) 5\nD) 6\nAnswer: B\nExplanation: Simple arithmetic addition.`}
-                                            className="w-full border border-gray-300 rounded-md p-3 font-mono text-xs text-gray-800 focus:ring-2 focus:ring-blue-500 outline-none"
-                                        ></textarea>
-                                    </div>
 
-                                    {parsedQuestions.length > 0 && (
-                                        <div className="border-t pt-4">
-                                            <h4 className="font-bold text-gray-900 mb-3 text-sm">Parsed Preview ({parsedQuestions.length} Questions Found)</h4>
-                                            <div className="space-y-3 max-h-60 overflow-y-auto border p-3 rounded bg-gray-50">
-                                                {parsedQuestions.map((q, idx) => (
-                                                    <div key={idx} className="p-3 bg-white border rounded text-xs space-y-1 shadow-sm">
-                                                        <p className="font-bold text-gray-900">{idx + 1}. {q.text}</p>
-                                                        <div className="grid grid-cols-2 gap-1 text-gray-600 pl-2">
-                                                            {q.options.map(o => (
-                                                                <span key={o.id} className={o.id === q.correctAnswer ? 'font-bold text-green-600' : ''}>
-                                                                    {o.id}) {o.text} {o.id === q.correctAnswer ? '✓' : ''}
-                                                                </span>
-                                                            ))}
+                                        <div className="space-y-6">
+                                            {examBlocks.map((block, bIdx) => (
+                                                <div key={block.id} className="border-2 border-blue-100 rounded-xl bg-white p-4 shadow-sm space-y-4 relative">
+                                                    <div className="flex flex-wrap justify-between items-center bg-blue-50/70 p-3 rounded-lg border border-blue-200 gap-3">
+                                                        <div className="flex items-center gap-2">
+                                                            <span className="font-extrabold text-blue-900 text-sm">Block {bIdx + 1}</span>
+                                                            <span className="text-xs text-blue-700 font-semibold bg-blue-100 px-2.5 py-1 rounded-full border border-blue-200">
+                                                                Questions {block.startQ} to {block.endQ}
+                                                            </span>
                                                         </div>
-                                                        {q.explanation && (
-                                                            <p className="text-gray-500 italic mt-1">Exp: {q.explanation}</p>
-                                                        )}
+
+                                                        <div className="flex items-center gap-3">
+                                                            <div className="flex items-center gap-1.5 text-xs">
+                                                                <span className="text-gray-600 font-semibold">End Question #:</span>
+                                                                <input
+                                                                    type="number"
+                                                                    value={block.endQ}
+                                                                    min={block.startQ}
+                                                                    max={totalQuestions}
+                                                                    onChange={(e) => handleUpdateBlock(bIdx, 'endQ', e.target.value)}
+                                                                    className="w-16 border border-gray-300 rounded p-1 text-xs font-bold text-center focus:ring-1 focus:ring-blue-500 outline-none"
+                                                                />
+                                                            </div>
+                                                            {examBlocks.length > 1 && (
+                                                                <button onClick={() => handleRemoveBlock(bIdx)} className="text-red-500 hover:text-red-700 text-xs font-bold pl-2 border-l border-gray-300">
+                                                                    Remove Block
+                                                                </button>
+                                                            )}
+                                                        </div>
                                                     </div>
-                                                ))}
-                                            </div>
+
+                                                    {/* Block Passage / Table Controls */}
+                                                    <div className="p-3 bg-gray-50 rounded-lg border border-gray-200 space-y-2">
+                                                        <div className="flex justify-between items-center">
+                                                            <label className="text-xs font-bold text-gray-800">
+                                                                Extendable Reference / Passage / Table for Questions {block.startQ}-{block.endQ}
+                                                            </label>
+                                                            <label className="flex items-center gap-1.5 text-xs text-gray-700 cursor-pointer">
+                                                                <input
+                                                                    type="checkbox"
+                                                                    checked={block.isHTML}
+                                                                    onChange={(e) => handleUpdateBlock(bIdx, 'isHTML', e.target.checked)}
+                                                                    className="rounded text-blue-600 focus:ring-blue-500"
+                                                                />
+                                                                <span>Render as HTML / Table</span>
+                                                            </label>
+                                                        </div>
+                                                        <input
+                                                            type="text"
+                                                            value={block.passageTitle}
+                                                            onChange={(e) => handleUpdateBlock(bIdx, 'passageTitle', e.target.value)}
+                                                            placeholder="Passage Title (e.g., Reading Passage 1, Data Table 1)"
+                                                            className="w-full border border-gray-300 rounded p-1.5 text-xs focus:ring-1 focus:ring-blue-500 outline-none"
+                                                        />
+                                                        <textarea
+                                                            value={block.passage}
+                                                            onChange={(e) => handleUpdateBlock(bIdx, 'passage', e.target.value)}
+                                                            rows="3"
+                                                            placeholder="Paste Passage text or HTML table code here..."
+                                                            className="w-full border border-gray-300 rounded p-2 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none"
+                                                        ></textarea>
+                                                    </div>
+
+                                                    {/* Raw Questions Input for this Block */}
+                                                    <div>
+                                                        <label className="block text-xs font-bold text-gray-700 mb-1">
+                                                            Questions Input for Block {bIdx + 1} (Questions {block.startQ} to {block.endQ})
+                                                        </label>
+                                                        <textarea
+                                                            value={block.rawText}
+                                                            onChange={(e) => handleUpdateBlock(bIdx, 'rawText', e.target.value)}
+                                                            rows="6"
+                                                            placeholder={`1. What is the main idea?\nA) Option A\nB) Option B\nC) Option C\nD) Option D\nAnswer: B\nExplanation: Simple explanation.`}
+                                                            className="w-full border border-gray-300 rounded-lg p-3 font-mono text-xs text-gray-800 focus:ring-2 focus:ring-blue-500 outline-none"
+                                                        ></textarea>
+                                                    </div>
+                                                </div>
+                                            ))}
                                         </div>
-                                    )}
+
+                                        <button
+                                            type="button"
+                                            onClick={handleAddBlock}
+                                            className="mt-4 w-full py-2.5 border-2 border-dashed border-blue-400 hover:border-blue-600 bg-blue-50/50 hover:bg-blue-100/50 text-blue-800 text-xs font-bold rounded-xl transition-colors flex justify-center items-center gap-2"
+                                        >
+                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"></path></svg>
+                                            Add Another Block
+                                        </button>
+                                    </div>
                                 </div>
 
                                 <div className="p-4 border-t bg-gray-50 flex justify-end gap-3">
                                     <button onClick={() => setShowAddModal(false)} className="px-4 py-2 border rounded-md text-gray-700 text-sm font-medium hover:bg-gray-100">Cancel</button>
                                     <button
                                         onClick={handleSaveExamToFirestore}
-                                        disabled={isSavingExam || parsedQuestions.length === 0}
-                                        className={`px-5 py-2 text-white text-sm font-bold rounded-md shadow transition-colors ${isSavingExam || parsedQuestions.length === 0 ? 'bg-gray-400 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700'
+                                        disabled={isSavingExam}
+                                        className={`px-6 py-2 text-white text-sm font-bold rounded-md shadow transition-colors ${isSavingExam ? 'bg-gray-400 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700'
                                             }`}
                                     >
-                                        {isSavingExam ? 'Saving...' : 'Save & Publish Exam'}
+                                        {isSavingExam ? 'Saving Exam...' : 'Save & Publish Exam'}
                                     </button>
                                 </div>
                             </div>
                         </div>
                     )}
 
-                    {/* Modal: Edit Existing Exam & Questions */}
+                    {/* MODAL: EDIT EXISTING EXAM */}
                     {editingExam && (
                         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 p-4">
                             <div className="bg-white rounded-xl shadow-2xl flex flex-col max-w-4xl w-full max-h-[90vh] overflow-hidden">
@@ -757,10 +938,17 @@ function App() {
                                 </div>
 
                                 <div className="p-6 overflow-y-auto space-y-6 flex-1">
-                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                                         <div>
                                             <label className="block text-sm font-semibold text-gray-700 mb-1">Title</label>
                                             <input type="text" value={editingExam.title} onChange={(e) => setEditingExam({ ...editingExam, title: e.target.value })} className="w-full border border-gray-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
+                                        </div>
+                                        <div>
+                                            <label className="block text-sm font-semibold text-gray-700 mb-1">Exam Type</label>
+                                            <select value={editingExam.type || 'default'} onChange={(e) => setEditingExam({ ...editingExam, type: e.target.value })} className="w-full border border-gray-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white">
+                                                <option value="default">Default</option>
+                                                <option value="UAT">UAT</option>
+                                            </select>
                                         </div>
                                         <div>
                                             <label className="block text-sm font-semibold text-gray-700 mb-1">Subject</label>
@@ -793,6 +981,35 @@ function App() {
                                                         <button onClick={() => handleDeleteQuestionFromEdit(qIdx)} className="text-red-500 hover:text-red-700 text-xs font-semibold">
                                                             Delete Question
                                                         </button>
+                                                    </div>
+
+                                                    <div className="p-3 bg-blue-50/50 border border-blue-200 rounded-md space-y-2">
+                                                        <div className="flex items-center justify-between gap-2">
+                                                            <span className="text-xs font-bold text-blue-900">Extendable Reading Passage / Table</span>
+                                                            <label className="flex items-center gap-1.5 text-xs text-gray-700 cursor-pointer">
+                                                                <input
+                                                                    type="checkbox"
+                                                                    checked={q.isHTML || false}
+                                                                    onChange={(e) => handleUpdateQuestionField(qIdx, 'isHTML', e.target.checked)}
+                                                                    className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                                                />
+                                                                <span>Render as HTML / Table</span>
+                                                            </label>
+                                                        </div>
+                                                        <input
+                                                            type="text"
+                                                            value={q.passageTitle || ''}
+                                                            onChange={(e) => handleUpdateQuestionField(qIdx, 'passageTitle', e.target.value)}
+                                                            placeholder="Passage Title (e.g., Passage 1, Cloze Test, Table 1)"
+                                                            className="w-full border border-gray-300 rounded p-1.5 text-xs bg-white focus:ring-1 focus:ring-blue-500 outline-none"
+                                                        />
+                                                        <textarea
+                                                            value={q.passage || ''}
+                                                            onChange={(e) => handleUpdateQuestionField(qIdx, 'passage', e.target.value)}
+                                                            rows="3"
+                                                            placeholder="Paste Passage text or HTML table code here..."
+                                                            className="w-full border border-gray-300 rounded p-1.5 text-xs bg-white font-mono focus:ring-1 focus:ring-blue-500 outline-none"
+                                                        ></textarea>
                                                     </div>
 
                                                     <textarea
@@ -859,7 +1076,7 @@ function App() {
                         </div>
                     )}
 
-                    {/* Modal: Delete Confirmation */}
+                    {/* MODAL: DELETE CONFIRMATION */}
                     {examToDelete && (
                         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4">
                             <div className="bg-white rounded-lg shadow-xl p-6 max-w-md w-full">
@@ -889,9 +1106,28 @@ function App() {
     const isSubmitted = currentView === 'results';
     const question = activeExam.questions[currentIndex] || activeExam.questions[0];
 
+    const renderQuestionButton = (q, idx) => {
+        const isAnswered = !!answers[q.id];
+        const isFlagged = !!flagged[q.id];
+        const isActive = currentIndex === idx;
+        let bgClass = "bg-white text-gray-600 border-gray-300 hover:bg-gray-50";
+
+        if (isSubmitted) {
+            if (!answers[q.id]) bgClass = "bg-gray-100 text-gray-500 border-gray-300";
+            else if (answers[q.id] === q.correctAnswer) bgClass = "bg-green-100 text-green-800 border-green-400";
+            else bgClass = "bg-red-100 text-red-800 border-red-400";
+        } else if (isAnswered) bgClass = "bg-blue-100 text-blue-800 border-blue-300";
+
+        return (
+            <button onClick={() => setCurrentIndex(idx)} key={q.id} className={`relative flex items-center justify-center py-2 px-1 text-xs sm:text-sm font-medium rounded border transition-colors ${bgClass} ${isActive ? 'ring-2 ring-blue-500 ring-offset-1' : ''}`}>
+                {idx + 1}
+                {isFlagged && <div className="absolute top-0 right-0 w-0 h-0 border-t-[10px] border-l-[10px] border-t-red-500 border-l-transparent rounded-tr-[3px]"></div>}
+            </button>
+        );
+    };
+
     return (
         <div className="min-h-screen py-4 px-4 sm:px-6 lg:px-8 relative pb-20">
-            {/* Modals */}
             {showResetModal && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 transition-opacity">
                     <div className="bg-white rounded-lg shadow-xl p-6 max-w-sm w-full mx-4">
@@ -966,7 +1202,6 @@ function App() {
                     </button>
                 </div>
 
-                {/* Timer UI */}
                 <div className="fixed bottom-6 right-6 sm:top-6 sm:right-8 sm:bottom-auto z-40 flex-shrink-0">
                     {isTimerHidden ? (
                         <button onClick={() => setIsTimerHidden(false)} className="flex items-center justify-center w-10 h-10 bg-white text-gray-400 rounded-full shadow-md border border-gray-200">
@@ -1021,37 +1256,38 @@ function App() {
                 <div className="flex flex-col lg:flex-row gap-6 relative">
                     <aside className="w-full lg:w-72 shrink-0 lg:sticky lg:top-6 h-fit bg-white rounded-lg border border-gray-200 shadow-sm p-4 order-2 lg:order-1">
                         <h3 className="text-lg font-bold text-gray-900 mb-3 border-b pb-2">Questions</h3>
-                        <div className="grid grid-cols-5 sm:grid-cols-8 md:grid-cols-10 lg:grid-cols-5 gap-2 mb-6 pr-2 pb-2 max-h-[300px] lg:max-h-[50vh] overflow-y-auto">
-                            {activeExam.questions.map((q, idx) => {
-                                const isAnswered = !!answers[q.id];
-                                const isFlagged = !!flagged[q.id];
-                                const isActive = currentIndex === idx;
-                                let bgClass = "bg-white text-gray-600 border-gray-300 hover:bg-gray-50";
-
-                                if (isSubmitted) {
-                                    if (!answers[q.id]) bgClass = "bg-gray-100 text-gray-500 border-gray-300";
-                                    else if (answers[q.id] === q.correctAnswer) bgClass = "bg-green-100 text-green-800 border-green-400";
-                                    else bgClass = "bg-red-100 text-red-800 border-red-400";
-                                } else if (isAnswered) bgClass = "bg-blue-100 text-blue-800 border-blue-300";
-
-                                return (
-                                    <button onClick={() => setCurrentIndex(idx)} key={q.id} className={`relative flex items-center justify-center py-2 px-1 text-xs sm:text-sm font-medium rounded border transition-colors ${bgClass} ${isActive ? 'ring-2 ring-blue-500 ring-offset-1' : ''}`}>
-                                        {idx + 1}
-                                        {isFlagged && <div className="absolute top-0 right-0 w-0 h-0 border-t-[10px] border-l-[10px] border-t-red-500 border-l-transparent rounded-tr-[3px]"></div>}
-                                    </button>
-                                );
-                            })}
+                        <div className="pr-2 pb-2 max-h-[300px] lg:max-h-[50vh] overflow-y-auto">
+                            {activeExam.type === 'UAT' ? (
+                                <>
+                                    <div className="text-xs font-bold text-gray-500 mb-2 uppercase tracking-wide">English (1-55)</div>
+                                    <div className="grid grid-cols-5 sm:grid-cols-8 md:grid-cols-10 lg:grid-cols-5 gap-2 mb-4">
+                                        {activeExam.questions.slice(0, 55).map((q, idx) => renderQuestionButton(q, idx))}
+                                    </div>
+                                    {activeExam.questions.length > 55 && (
+                                        <>
+                                            <div className="text-xs font-bold text-gray-500 mb-2 uppercase tracking-wide border-t border-gray-100 pt-3">Mathematics (56+)</div>
+                                            <div className="grid grid-cols-5 sm:grid-cols-8 md:grid-cols-10 lg:grid-cols-5 gap-2 mb-2">
+                                                {activeExam.questions.slice(55).map((q, idx) => renderQuestionButton(q, idx + 55))}
+                                            </div>
+                                        </>
+                                    )}
+                                </>
+                            ) : (
+                                <div className="grid grid-cols-5 sm:grid-cols-8 md:grid-cols-10 lg:grid-cols-5 gap-2 mb-2">
+                                    {activeExam.questions.map((q, idx) => renderQuestionButton(q, idx))}
+                                </div>
+                            )}
                         </div>
 
                         {!isSubmitted ? (
-                            <div className="flex flex-col gap-3">
+                            <div className="flex flex-col gap-3 mt-4 border-t pt-4">
                                 <div className="text-sm text-gray-600 mb-1">Answered: <span className="font-bold">{Object.keys(answers).length}</span> / {activeExam.questions.length}</div>
                                 <button onClick={handleSubmit} className="w-full px-4 py-3 bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 transition-colors shadow-sm">
                                     Submit Exam
                                 </button>
                             </div>
                         ) : (
-                            <div className="flex flex-col gap-3 p-3 bg-gray-50 border border-gray-200 rounded-lg">
+                            <div className="flex flex-col gap-3 mt-4 p-3 bg-gray-50 border border-gray-200 rounded-lg">
                                 <h4 className="font-bold text-gray-800 border-b pb-1">Final Score</h4>
                                 <div className="text-2xl font-black text-center py-2 text-gray-900">
                                     {score} / {activeExam.questions.length} ({Math.round((score / (activeExam.questions.length || 1)) * 100)}%)
@@ -1069,10 +1305,21 @@ function App() {
                     <main className="flex-1 order-1 lg:order-2">
                         <div className="bg-[#f8f9fa] border border-gray-200 rounded-lg p-5 sm:p-8 shadow-sm min-h-[400px] flex flex-col justify-between">
                             <div>
-                                {question.passage && <Passage title={question.passageTitle} text={question.passage} isHTML={question.isHTML} />}
+                                {question.passage && (
+                                    <Passage 
+                                        title={question.passageTitle} 
+                                        text={question.passage} 
+                                        isHTML={question.isHTML} 
+                                    />
+                                )}
                                 <div className="mb-5 flex justify-between items-start gap-4">
                                     <div className="w-full overflow-hidden">
-                                        <h2 className="text-gray-500 text-sm font-semibold uppercase tracking-wider mb-2">Question {currentIndex + 1}</h2>
+                                        <h2 className="text-indigo-500 text-xs font-bold uppercase tracking-wider mb-2">
+                                            {activeExam.type === 'UAT' 
+                                                ? (currentIndex < 55 ? `English Section - Question ${currentIndex + 1}` : `Mathematics Section - Question ${currentIndex + 1}`) 
+                                                : `Question ${currentIndex + 1}`
+                                            }
+                                        </h2>
                                         {question.image && <img src={question.image} alt="Figure" className="mb-4 max-w-full rounded-md border border-gray-200 mt-2 max-h-64 object-contain" />}
                                         <div className="text-gray-900 text-lg sm:text-xl whitespace-pre-wrap leading-relaxed">
                                             <span className="font-bold mr-2">{currentIndex + 1}.</span><MathText text={question.text} />
@@ -1118,7 +1365,6 @@ function App() {
                                         </button>
                                     )}
 
-                                    {/* FLAG REASON FIELD (Shows when user flags question) */}
                                     {flagged[question.id] && (
                                         <div className="mt-5">
                                             <label className="block text-sm font-medium text-[#c07c24] mb-2">
@@ -1134,7 +1380,6 @@ function App() {
                                         </div>
                                     )}
 
-                                    {/* POST-SUBMISSION EXPLANATION CARD */}
                                     {isSubmitted && (
                                         <div className={`mt-6 p-4 sm:p-5 rounded-lg border text-sm sm:text-base ${answers[question.id] === question.correctAnswer
                                                 ? 'bg-emerald-50/80 border-emerald-300 text-emerald-950'
