@@ -135,6 +135,9 @@ function App() {
     const [flagged, setFlagged] = useState({});
     const [flagReasons, setFlagReasons] = useState({});
     const [score, setScore] = useState(0);
+    
+    // NEW: Manage active section for UAT
+    const [uatSection, setUatSection] = useState(null); // 'english' | 'math' | null
 
     const [highScores, setHighScores] = useState(() => {
         try {
@@ -145,7 +148,6 @@ function App() {
         }
     });
 
-    // NEW: State for tracking complete trial history
     const [examHistory, setExamHistory] = useState(() => {
         try {
             const saved = localStorage.getItem('exam_history_logs');
@@ -159,7 +161,6 @@ function App() {
     const [selectedSubjectFilter, setSelectedSubjectFilter] = useState('All');
     const [customSubjects, setCustomSubjects] = useState(['Mathematics', 'Physics', 'Chemistry', 'Biology', 'English']);
 
-    // --- NEW: State for Info Modal ---
     const [selectedExamStats, setSelectedExamStats] = useState(null);
 
     const [showAddModal, setShowAddModal] = useState(false);
@@ -169,9 +170,17 @@ function App() {
     const [examDuration, setExamDuration] = useState(60);
     const [examDescription, setExamDescription] = useState('');
     const [totalQuestions, setTotalQuestions] = useState(60);
+    
     const [examBlocks, setExamBlocks] = useState([
         { id: 1, startQ: 1, endQ: 60, passageTitle: '', passage: '', isHTML: false, rawText: '' }
     ]);
+    const [uatEnglishBlocks, setUatEnglishBlocks] = useState([
+        { id: 1, startQ: 1, endQ: 55, passageTitle: '', passage: '', isHTML: false, rawText: '' }
+    ]);
+    const [uatMathBlocks, setUatMathBlocks] = useState([
+        { id: 2, startQ: 56, endQ: 100, passageTitle: '', passage: '', isHTML: false, rawText: '' }
+    ]);
+    
     const [isSavingExam, setIsSavingExam] = useState(false);
 
     const [editingExam, setEditingExam] = useState(null);
@@ -214,10 +223,15 @@ function App() {
         if (timerStatus === 'running' && timeLeft > 0) {
             interval = setInterval(() => setTimeLeft((prev) => prev - 1), 1000);
         } else if (timeLeft === 0 && timerStatus === 'running') {
-            handleSubmit();
+            // Check if timer expired on English UAT, trigger Math phase automatically
+            if (activeExam?.type === 'UAT' && uatSection === 'english') {
+                handleStartMath();
+            } else {
+                handleSubmit();
+            }
         }
         return () => { if (interval) clearInterval(interval); };
-    }, [timerStatus, timeLeft]);
+    }, [timerStatus, timeLeft, activeExam, uatSection]);
 
     useEffect(() => {
         if (currentView !== 'dashboard') {
@@ -229,47 +243,67 @@ function App() {
         const count = Math.max(1, Number(val));
         setTotalQuestions(count);
         setExamBlocks(prev => {
-            if (prev.length === 1) {
-                return [{ ...prev[0], endQ: count }];
-            }
+            if (prev.length === 1) return [{ ...prev[0], endQ: count }];
             const updated = [...prev];
             updated[updated.length - 1].endQ = count;
             return updated;
         });
     };
 
-    const handleUpdateBlock = (index, field, value) => {
-        const updated = [...examBlocks];
+    const handleUpdateBlock = (index, field, value, sectionType = 'default') => {
+        let targetBlocks = examBlocks;
+        let setTargetBlocks = setExamBlocks;
+        
+        if (sectionType === 'english') { targetBlocks = uatEnglishBlocks; setTargetBlocks = setUatEnglishBlocks; }
+        if (sectionType === 'math') { targetBlocks = uatMathBlocks; setTargetBlocks = setUatMathBlocks; }
+
+        const updated = [...targetBlocks];
         updated[index][field] = value;
         if (field === 'endQ' && index < updated.length - 1) {
             const newEnd = Math.max(updated[index].startQ, Number(value));
             updated[index].endQ = newEnd;
             updated[index + 1].startQ = newEnd + 1;
         }
-        setExamBlocks(updated);
+        setTargetBlocks(updated);
     };
 
-    const handleAddBlock = () => {
-        const lastBlock = examBlocks[examBlocks.length - 1];
+    const handleAddBlock = (sectionType = 'default') => {
+        let targetBlocks = examBlocks;
+        let setTargetBlocks = setExamBlocks;
+        let maxBase = totalQuestions;
+
+        if (sectionType === 'english') { targetBlocks = uatEnglishBlocks; setTargetBlocks = setUatEnglishBlocks; maxBase = 55; }
+        if (sectionType === 'math') { targetBlocks = uatMathBlocks; setTargetBlocks = setUatMathBlocks; maxBase = 100; }
+
+        const lastBlock = targetBlocks[targetBlocks.length - 1];
         const nextStart = lastBlock.endQ + 1;
-        const nextEnd = Math.max(nextStart, totalQuestions);
-        setExamBlocks([...examBlocks, { id: Date.now(), startQ: nextStart, endQ: nextEnd, passageTitle: '', passage: '', isHTML: false, rawText: '' }]);
+        const nextEnd = Math.max(nextStart, maxBase);
+        setTargetBlocks([...targetBlocks, { id: Date.now(), startQ: nextStart, endQ: nextEnd, passageTitle: '', passage: '', isHTML: false, rawText: '' }]);
     };
 
-    const handleRemoveBlock = (index) => {
-        if (examBlocks.length <= 1) return;
-        const updated = examBlocks.filter((_, idx) => idx !== index);
-        let currentStart = 1;
+    const handleRemoveBlock = (index, sectionType = 'default') => {
+        let targetBlocks = examBlocks;
+        let setTargetBlocks = setExamBlocks;
+        let startBase = 1;
+        let maxBase = totalQuestions;
+
+        if (sectionType === 'english') { targetBlocks = uatEnglishBlocks; setTargetBlocks = setUatEnglishBlocks; maxBase = 55; }
+        if (sectionType === 'math') { targetBlocks = uatMathBlocks; setTargetBlocks = setUatMathBlocks; startBase = 56; maxBase = 100; }
+
+        if (targetBlocks.length <= 1) return;
+        const updated = targetBlocks.filter((_, idx) => idx !== index);
+        
+        let currentStart = startBase;
         updated.forEach((b, idx) => {
             b.startQ = currentStart;
             if (idx === updated.length - 1) {
-                b.endQ = Math.max(currentStart, totalQuestions);
+                b.endQ = Math.max(currentStart, maxBase);
             } else if (b.endQ < currentStart) {
                 b.endQ = currentStart + 5;
             }
             currentStart = b.endQ + 1;
         });
-        setExamBlocks(updated);
+        setTargetBlocks(updated);
     };
 
     const handleSaveExamToFirestore = async () => {
@@ -279,12 +313,25 @@ function App() {
         }
 
         let compiledQuestions = [];
-        examBlocks.forEach((block) => {
-            if (block.rawText.trim()) {
-                const blockParsed = parseBlockQuestions(block.rawText, block.passageTitle, block.passage, block.isHTML, block.startQ);
-                compiledQuestions = compiledQuestions.concat(blockParsed);
-            }
-        });
+        
+        if (examType === 'UAT') {
+            uatEnglishBlocks.forEach((block) => {
+                if (block.rawText.trim()) {
+                    compiledQuestions = compiledQuestions.concat(parseBlockQuestions(block.rawText, block.passageTitle, block.passage, block.isHTML, block.startQ));
+                }
+            });
+            uatMathBlocks.forEach((block) => {
+                if (block.rawText.trim()) {
+                    compiledQuestions = compiledQuestions.concat(parseBlockQuestions(block.rawText, block.passageTitle, block.passage, block.isHTML, block.startQ));
+                }
+            });
+        } else {
+            examBlocks.forEach((block) => {
+                if (block.rawText.trim()) {
+                    compiledQuestions = compiledQuestions.concat(parseBlockQuestions(block.rawText, block.passageTitle, block.passage, block.isHTML, block.startQ));
+                }
+            });
+        }
 
         compiledQuestions = compiledQuestions.map((q, idx) => ({ ...q, id: idx + 1 }));
 
@@ -301,7 +348,7 @@ function App() {
             title: examTitle,
             type: examType,
             subject: examSubject,
-            durationMinutes: Number(examDuration),
+            durationMinutes: examType === 'UAT' ? 150 : Number(examDuration),
             description: examDescription,
             questions: compiledQuestions,
             createdAt: firebase.firestore.FieldValue.serverTimestamp()
@@ -318,6 +365,8 @@ function App() {
             setExamDescription('');
             setTotalQuestions(60);
             setExamBlocks([{ id: 1, startQ: 1, endQ: 60, passageTitle: '', passage: '', isHTML: false, rawText: '' }]);
+            setUatEnglishBlocks([{ id: 1, startQ: 1, endQ: 55, passageTitle: '', passage: '', isHTML: false, rawText: '' }]);
+            setUatMathBlocks([{ id: 2, startQ: 56, endQ: 100, passageTitle: '', passage: '', isHTML: false, rawText: '' }]);
             setShowAddModal(false);
 
             alert(`Exam successfully saved with ${compiledQuestions.length} questions!`);
@@ -418,12 +467,24 @@ function App() {
 
     const handleSelectExam = (exam) => {
         setActiveExam(exam);
-        const initialSeconds = exam.durationMinutes * 60;
-        setInputHours(Math.floor(initialSeconds / 3600));
-        setInputMinutes(Math.floor((initialSeconds % 3600) / 60));
-        setInputSeconds(initialSeconds % 60);
-        setTimeLeft(initialSeconds);
-        setTimerStatus('running');
+        if (exam.type === 'UAT') {
+            setUatSection('english');
+            setInputHours(1);
+            setInputMinutes(0);
+            setInputSeconds(0);
+            setTimeLeft(3600); // 1 hour for English Phase
+            setTimerStatus('running');
+            setCurrentIndex(0);
+        } else {
+            setUatSection(null);
+            const initialSeconds = exam.durationMinutes * 60;
+            setInputHours(Math.floor(initialSeconds / 3600));
+            setInputMinutes(Math.floor((initialSeconds % 3600) / 60));
+            setInputSeconds(initialSeconds % 60);
+            setTimeLeft(initialSeconds);
+            setTimerStatus('running');
+            setCurrentIndex(0);
+        }
         setCurrentView('exam');
     };
 
@@ -447,6 +508,16 @@ function App() {
 
     const toggleFlag = (questionId) => setFlagged({ ...flagged, [questionId]: !flagged[questionId] });
 
+    const handleStartMath = () => {
+        setUatSection('math');
+        setCurrentIndex(55); // Jump to Question 56
+        setTimeLeft(5400); // Set to 90 Mins exactly
+        setInputHours(1);
+        setInputMinutes(30);
+        setInputSeconds(0);
+        setTimerStatus('running');
+    };
+
     const handleSubmit = () => {
         let finalScore = 0;
         activeExam.questions.forEach(q => {
@@ -467,7 +538,6 @@ function App() {
             return updated;
         });
 
-        // NEW: Update Trial History Logic
         const newRecord = {
             score: finalScore,
             total: totalQ,
@@ -498,11 +568,20 @@ function App() {
         setShowResetModal(false);
         setTimerStatus('running');
 
-        const initialSeconds = activeExam.durationMinutes * 60;
-        setTimeLeft(initialSeconds);
-        setInputHours(Math.floor(initialSeconds / 3600));
-        setInputMinutes(Math.floor((initialSeconds % 3600) / 60));
-        setInputSeconds(initialSeconds % 60);
+        if (activeExam.type === 'UAT') {
+            setUatSection('english');
+            setTimeLeft(3600);
+            setInputHours(1);
+            setInputMinutes(0);
+            setInputSeconds(0);
+        } else {
+            setUatSection(null);
+            const initialSeconds = activeExam.durationMinutes * 60;
+            setTimeLeft(initialSeconds);
+            setInputHours(Math.floor(initialSeconds / 3600));
+            setInputMinutes(Math.floor((initialSeconds % 3600) / 60));
+            setInputSeconds(initialSeconds % 60);
+        }
 
         setCurrentView('exam');
     };
@@ -520,7 +599,6 @@ function App() {
             }
             try { localStorage.setItem('exam_history_logs', JSON.stringify(updated)); } catch (e) { }
 
-            // Recalculate high score badge
             setHighScores(prevScores => {
                 const updatedScores = { ...prevScores };
                 if (!updated[examId] || updated[examId].length === 0) {
@@ -562,6 +640,7 @@ function App() {
         setScore(0);
         setCurrentIndex(0);
         setTimerStatus('idle');
+        setUatSection(null);
         setCurrentView('dashboard');
     };
 
@@ -642,6 +721,107 @@ function App() {
             }
         } catch (err) { }
         document.body.removeChild(textArea);
+    };
+
+    // Helper Component Method for Block Building in Add Modal
+    const renderBlockGroup = (blocksList, sectionType) => {
+        let sectionTitle = "Question Blocks & Extendable Passages";
+        if (sectionType === 'english') sectionTitle = "English Section (Questions 1-55)";
+        if (sectionType === 'math') sectionTitle = "Math Section (Questions 56-100)";
+
+        return (
+            <div className={sectionType !== 'default' ? "mt-6 border-t pt-4" : ""}>
+                <div className="flex justify-between items-center mb-3">
+                    <h4 className="font-bold text-gray-900 text-sm uppercase tracking-wide">{sectionTitle}</h4>
+                </div>
+                <div className="space-y-6">
+                    {blocksList.map((block, bIdx) => (
+                        <div key={block.id} className="border-2 border-blue-100 rounded-xl bg-white p-4 shadow-sm space-y-4 relative">
+                            <div className="flex flex-wrap justify-between items-center bg-blue-50/70 p-3 rounded-lg border border-blue-200 gap-3">
+                                <div className="flex items-center gap-2">
+                                    <span className="font-extrabold text-blue-900 text-sm">Block {bIdx + 1}</span>
+                                    <span className="text-xs text-blue-700 font-semibold bg-blue-100 px-2.5 py-1 rounded-full border border-blue-200">
+                                        Questions {block.startQ} to {block.endQ}
+                                    </span>
+                                </div>
+
+                                <div className="flex items-center gap-3">
+                                    <div className="flex items-center gap-1.5 text-xs">
+                                        <span className="text-gray-600 font-semibold">End Question #:</span>
+                                        <input
+                                            type="number"
+                                            value={block.endQ}
+                                            min={block.startQ}
+                                            max={sectionType === 'english' ? 55 : (sectionType === 'math' ? 100 : totalQuestions)}
+                                            onChange={(e) => handleUpdateBlock(bIdx, 'endQ', e.target.value, sectionType)}
+                                            className="w-16 border border-gray-300 rounded p-1 text-xs font-bold text-center focus:ring-1 focus:ring-blue-500 outline-none"
+                                        />
+                                    </div>
+                                    {blocksList.length > 1 && (
+                                        <button onClick={() => handleRemoveBlock(bIdx, sectionType)} className="text-red-500 hover:text-red-700 text-xs font-bold pl-2 border-l border-gray-300">
+                                            Remove Block
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+
+                            <div className="p-3 bg-gray-50 rounded-lg border border-gray-200 space-y-2">
+                                <div className="flex justify-between items-center">
+                                    <label className="text-xs font-bold text-gray-800">
+                                        Extendable Reference / Passage / Table
+                                    </label>
+                                    <label className="flex items-center gap-1.5 text-xs text-gray-700 cursor-pointer">
+                                        <input
+                                            type="checkbox"
+                                            checked={block.isHTML}
+                                            onChange={(e) => handleUpdateBlock(bIdx, 'isHTML', e.target.checked, sectionType)}
+                                            className="rounded text-blue-600 focus:ring-blue-500"
+                                        />
+                                        <span>Render as HTML / Table</span>
+                                    </label>
+                                </div>
+                                <input
+                                    type="text"
+                                    value={block.passageTitle}
+                                    onChange={(e) => handleUpdateBlock(bIdx, 'passageTitle', e.target.value, sectionType)}
+                                    placeholder="Passage Title (e.g., Reading Passage 1, Data Table 1)"
+                                    className="w-full border border-gray-300 rounded p-1.5 text-xs focus:ring-1 focus:ring-blue-500 outline-none"
+                                />
+                                <textarea
+                                    value={block.passage}
+                                    onChange={(e) => handleUpdateBlock(bIdx, 'passage', e.target.value, sectionType)}
+                                    rows="3"
+                                    placeholder="Paste Passage text or HTML table code here..."
+                                    className="w-full border border-gray-300 rounded p-2 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none"
+                                ></textarea>
+                            </div>
+
+                            <div>
+                                <label className="block text-xs font-bold text-gray-700 mb-1">
+                                    Questions Input for Block {bIdx + 1} (Questions {block.startQ} to {block.endQ})
+                                </label>
+                                <textarea
+                                    value={block.rawText}
+                                    onChange={(e) => handleUpdateBlock(bIdx, 'rawText', e.target.value, sectionType)}
+                                    rows="6"
+                                    placeholder={`1. What is the main idea?\nA) Option A\nB) Option B\nC) Option C\nD) Option D\nAnswer: B\nExplanation: Simple explanation.`}
+                                    className="w-full border border-gray-300 rounded-lg p-3 font-mono text-xs text-gray-800 focus:ring-2 focus:ring-blue-500 outline-none"
+                                ></textarea>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+
+                <button
+                    type="button"
+                    onClick={() => handleAddBlock(sectionType)}
+                    className="mt-4 w-full py-2.5 border-2 border-dashed border-blue-400 hover:border-blue-600 bg-blue-50/50 hover:bg-blue-100/50 text-blue-800 text-xs font-bold rounded-xl transition-colors flex justify-center items-center gap-2"
+                >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"></path></svg>
+                    Add Another Block
+                </button>
+            </div>
+        );
     };
 
     const availableSubjects = ['All', ...new Set(exams.map(e => e.subject).filter(Boolean))];
@@ -770,7 +950,6 @@ function App() {
                                             </div>
 
                                             <div className="flex items-center gap-1">
-                                                {/* NEW: Info Button */}
                                                 <button onClick={() => setSelectedExamStats(exam)} title="Exam Info & History" className="p-1 text-gray-400 hover:text-blue-600 transition-colors">
                                                     <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
                                                 </button>
@@ -803,7 +982,7 @@ function App() {
                         </div>
                     )}
 
-                    {/* NEW MODAL: EXAM INFO & HISTORY */}
+                    {/* EXAM INFO & HISTORY MODAL */}
                     {selectedExamStats && (
                         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 p-4">
                             <div className="bg-white rounded-xl shadow-2xl flex flex-col max-w-2xl w-full max-h-[90vh] overflow-hidden">
@@ -887,7 +1066,7 @@ function App() {
                         </div>
                     )}
 
-                    {/* MODAL: ADD NEW EXAM (BLOCK-BASED) */}
+                    {/* MODAL: ADD NEW EXAM */}
                     {showAddModal && (
                         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 p-4">
                             <div className="bg-white rounded-xl shadow-2xl flex flex-col max-w-5xl w-full max-h-[92vh] overflow-hidden">
@@ -901,9 +1080,8 @@ function App() {
                                     </button>
                                 </div>
 
-                                <div className="p-6 overflow-y-auto space-y-6 flex-1">
-                                    {/* Exam Metadata Inputs */}
-                                    <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4 bg-gray-50 p-4 rounded-lg border border-gray-200">
+                                <div className="p-6 overflow-y-auto flex-1">
+                                    <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4 bg-gray-50 p-4 rounded-lg border border-gray-200 mb-6">
                                         <div>
                                             <label className="block text-xs font-bold text-gray-700 mb-1">Exam Title *</label>
                                             <input type="text" value={examTitle} onChange={(e) => setExamTitle(e.target.value)} placeholder="e.g. Model Exam 2" className="w-full border border-gray-300 rounded-md p-2 text-xs focus:ring-2 focus:ring-blue-500 outline-none bg-white" />
@@ -933,121 +1111,40 @@ function App() {
                                             </div>
                                         </div>
                                         <div>
-                                            <label className="block text-xs font-bold text-gray-700 mb-1">Duration (Mins)</label>
-                                            <input type="number" value={examDuration} onChange={(e) => setExamDuration(e.target.value)} min="1" className="w-full border border-gray-300 rounded-md p-2 text-xs focus:ring-2 focus:ring-blue-500 outline-none bg-white" />
-                                        </div>
-                                        <div>
                                             <label className="block text-xs font-bold text-gray-700 mb-1">Exam Type</label>
                                             <select value={examType} onChange={(e) => setExamType(e.target.value)} className="w-full border border-gray-300 rounded-md p-2 text-xs focus:ring-2 focus:ring-blue-500 outline-none bg-white">
                                                 <option value="default">Default</option>
                                                 <option value="UAT">UAT</option>
                                             </select>
                                         </div>
-                                        <div>
-                                            <label className="block text-xs font-bold text-gray-700 mb-1">Total Exam Qs</label>
-                                            <input type="number" value={totalQuestions} onChange={(e) => handleTotalQuestionsChange(e.target.value)} min="1" className="w-full border border-gray-300 rounded-md p-2 text-xs font-bold text-blue-700 focus:ring-2 focus:ring-blue-500 outline-none bg-white" />
-                                        </div>
-                                    </div>
-
-                                    <div>
-                                        <label className="block text-xs font-bold text-gray-700 mb-1">Description</label>
-                                        <input type="text" value={examDescription} onChange={(e) => setExamDescription(e.target.value)} placeholder="Brief details or instructions..." className="w-full border border-gray-300 rounded-md p-2 text-xs focus:ring-2 focus:ring-blue-500 outline-none" />
-                                    </div>
-
-                                    {/* BLOCK BUILDER SECTION */}
-                                    <div className="border-t pt-4">
-                                        <div className="flex justify-between items-center mb-3">
-                                            <h4 className="font-bold text-gray-900 text-sm uppercase tracking-wide">Question Blocks & Extendable Passages</h4>
-                                            <span className="text-xs text-gray-500">Organize questions into grouped blocks with shared references.</span>
-                                        </div>
-
-                                        <div className="space-y-6">
-                                            {examBlocks.map((block, bIdx) => (
-                                                <div key={block.id} className="border-2 border-blue-100 rounded-xl bg-white p-4 shadow-sm space-y-4 relative">
-                                                    <div className="flex flex-wrap justify-between items-center bg-blue-50/70 p-3 rounded-lg border border-blue-200 gap-3">
-                                                        <div className="flex items-center gap-2">
-                                                            <span className="font-extrabold text-blue-900 text-sm">Block {bIdx + 1}</span>
-                                                            <span className="text-xs text-blue-700 font-semibold bg-blue-100 px-2.5 py-1 rounded-full border border-blue-200">
-                                                                Questions {block.startQ} to {block.endQ}
-                                                            </span>
-                                                        </div>
-
-                                                        <div className="flex items-center gap-3">
-                                                            <div className="flex items-center gap-1.5 text-xs">
-                                                                <span className="text-gray-600 font-semibold">End Question #:</span>
-                                                                <input
-                                                                    type="number"
-                                                                    value={block.endQ}
-                                                                    min={block.startQ}
-                                                                    max={totalQuestions}
-                                                                    onChange={(e) => handleUpdateBlock(bIdx, 'endQ', e.target.value)}
-                                                                    className="w-16 border border-gray-300 rounded p-1 text-xs font-bold text-center focus:ring-1 focus:ring-blue-500 outline-none"
-                                                                />
-                                                            </div>
-                                                            {examBlocks.length > 1 && (
-                                                                <button onClick={() => handleRemoveBlock(bIdx)} className="text-red-500 hover:text-red-700 text-xs font-bold pl-2 border-l border-gray-300">
-                                                                    Remove Block
-                                                                </button>
-                                                            )}
-                                                        </div>
-                                                    </div>
-
-                                                    <div className="p-3 bg-gray-50 rounded-lg border border-gray-200 space-y-2">
-                                                        <div className="flex justify-between items-center">
-                                                            <label className="text-xs font-bold text-gray-800">
-                                                                Extendable Reference / Passage / Table for Questions {block.startQ}-{block.endQ}
-                                                            </label>
-                                                            <label className="flex items-center gap-1.5 text-xs text-gray-700 cursor-pointer">
-                                                                <input
-                                                                    type="checkbox"
-                                                                    checked={block.isHTML}
-                                                                    onChange={(e) => handleUpdateBlock(bIdx, 'isHTML', e.target.checked)}
-                                                                    className="rounded text-blue-600 focus:ring-blue-500"
-                                                                />
-                                                                <span>Render as HTML / Table</span>
-                                                            </label>
-                                                        </div>
-                                                        <input
-                                                            type="text"
-                                                            value={block.passageTitle}
-                                                            onChange={(e) => handleUpdateBlock(bIdx, 'passageTitle', e.target.value)}
-                                                            placeholder="Passage Title (e.g., Reading Passage 1, Data Table 1)"
-                                                            className="w-full border border-gray-300 rounded p-1.5 text-xs focus:ring-1 focus:ring-blue-500 outline-none"
-                                                        />
-                                                        <textarea
-                                                            value={block.passage}
-                                                            onChange={(e) => handleUpdateBlock(bIdx, 'passage', e.target.value)}
-                                                            rows="3"
-                                                            placeholder="Paste Passage text or HTML table code here..."
-                                                            className="w-full border border-gray-300 rounded p-2 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none"
-                                                        ></textarea>
-                                                    </div>
-
-                                                    <div>
-                                                        <label className="block text-xs font-bold text-gray-700 mb-1">
-                                                            Questions Input for Block {bIdx + 1} (Questions {block.startQ} to {block.endQ})
-                                                        </label>
-                                                        <textarea
-                                                            value={block.rawText}
-                                                            onChange={(e) => handleUpdateBlock(bIdx, 'rawText', e.target.value)}
-                                                            rows="6"
-                                                            placeholder={`1. What is the main idea?\nA) Option A\nB) Option B\nC) Option C\nD) Option D\nAnswer: B\nExplanation: Simple explanation.`}
-                                                            className="w-full border border-gray-300 rounded-lg p-3 font-mono text-xs text-gray-800 focus:ring-2 focus:ring-blue-500 outline-none"
-                                                        ></textarea>
-                                                    </div>
+                                        {examType !== 'UAT' && (
+                                            <>
+                                                <div>
+                                                    <label className="block text-xs font-bold text-gray-700 mb-1">Duration (Mins)</label>
+                                                    <input type="number" value={examDuration} onChange={(e) => setExamDuration(e.target.value)} min="1" className="w-full border border-gray-300 rounded-md p-2 text-xs focus:ring-2 focus:ring-blue-500 outline-none bg-white" />
                                                 </div>
-                                            ))}
+                                                <div>
+                                                    <label className="block text-xs font-bold text-gray-700 mb-1">Total Exam Qs</label>
+                                                    <input type="number" value={totalQuestions} onChange={(e) => handleTotalQuestionsChange(e.target.value)} min="1" className="w-full border border-gray-300 rounded-md p-2 text-xs font-bold text-blue-700 focus:ring-2 focus:ring-blue-500 outline-none bg-white" />
+                                                </div>
+                                            </>
+                                        )}
+                                        <div className="md:col-span-3 lg:col-span-5">
+                                            <label className="block text-xs font-bold text-gray-700 mb-1">Description</label>
+                                            <input type="text" value={examDescription} onChange={(e) => setExamDescription(e.target.value)} placeholder="Brief details or instructions..." className="w-full border border-gray-300 rounded-md p-2 text-xs focus:ring-2 focus:ring-blue-500 outline-none" />
                                         </div>
-
-                                        <button
-                                            type="button"
-                                            onClick={handleAddBlock}
-                                            className="mt-4 w-full py-2.5 border-2 border-dashed border-blue-400 hover:border-blue-600 bg-blue-50/50 hover:bg-blue-100/50 text-blue-800 text-xs font-bold rounded-xl transition-colors flex justify-center items-center gap-2"
-                                        >
-                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"></path></svg>
-                                            Add Another Block
-                                        </button>
                                     </div>
+
+                                    {examType === 'UAT' ? (
+                                        <div className="border-t pt-4">
+                                            {renderBlockGroup(uatEnglishBlocks, 'english')}
+                                            {renderBlockGroup(uatMathBlocks, 'math')}
+                                        </div>
+                                    ) : (
+                                        <div className="border-t pt-4">
+                                            {renderBlockGroup(examBlocks, 'default')}
+                                        </div>
+                                    )}
                                 </div>
 
                                 <div className="p-4 border-t bg-gray-50 flex justify-end gap-3">
@@ -1055,8 +1152,7 @@ function App() {
                                     <button
                                         onClick={handleSaveExamToFirestore}
                                         disabled={isSavingExam}
-                                        className={`px-6 py-2 text-white text-sm font-bold rounded-md shadow transition-colors ${isSavingExam ? 'bg-gray-400 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700'
-                                            }`}
+                                        className={`px-6 py-2 text-white text-sm font-bold rounded-md shadow transition-colors ${isSavingExam ? 'bg-gray-400 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700'}`}
                                     >
                                         {isSavingExam ? 'Saving Exam...' : 'Save & Publish Exam'}
                                     </button>
@@ -1205,8 +1301,7 @@ function App() {
                                     <button
                                         onClick={handleSaveEditedExam}
                                         disabled={isUpdatingExam}
-                                        className={`px-5 py-2 text-white text-sm font-bold rounded-md shadow transition-colors ${isUpdatingExam ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'
-                                            }`}
+                                        className={`px-5 py-2 text-white text-sm font-bold rounded-md shadow transition-colors ${isUpdatingExam ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'}`}
                                     >
                                         {isUpdatingExam ? 'Saving...' : 'Save Changes'}
                                     </button>
@@ -1263,6 +1358,33 @@ function App() {
             </button>
         );
     };
+
+    // Calculate UAT Split Scores For Rendering
+    let englishScore = 0;
+    let mathScore = 0;
+    if (isSubmitted && activeExam.type === 'UAT') {
+        activeExam.questions.forEach((q, idx) => {
+            if (answers[q.id] === q.correctAnswer) {
+                if (idx < 55) englishScore++;
+                else mathScore++;
+            }
+        });
+    }
+
+    let isPrevDisabled = false;
+    let isNextDisabled = false;
+    if (activeExam?.type === 'UAT' && !isSubmitted) {
+        if (uatSection === 'english') {
+            isPrevDisabled = currentIndex === 0;
+            isNextDisabled = currentIndex === 54;
+        } else if (uatSection === 'math') {
+            isPrevDisabled = currentIndex === 55;
+            isNextDisabled = currentIndex === activeExam.questions.length - 1;
+        }
+    } else {
+        isPrevDisabled = currentIndex === 0;
+        isNextDisabled = currentIndex === activeExam.questions.length - 1;
+    }
 
     return (
         <div className="min-h-screen py-4 px-4 sm:px-6 lg:px-8 relative pb-20">
@@ -1397,11 +1519,15 @@ function App() {
                         <div className="pr-2 pb-2 max-h-[300px] lg:max-h-[50vh] overflow-y-auto">
                             {activeExam.type === 'UAT' ? (
                                 <>
-                                    <div className="text-xs font-bold text-gray-500 mb-2 uppercase tracking-wide">English (1-55)</div>
-                                    <div className="grid grid-cols-5 sm:grid-cols-8 md:grid-cols-10 lg:grid-cols-5 gap-2 mb-4">
-                                        {activeExam.questions.slice(0, 55).map((q, idx) => renderQuestionButton(q, idx))}
-                                    </div>
-                                    {activeExam.questions.length > 55 && (
+                                    {(isSubmitted || uatSection === 'english') && (
+                                        <>
+                                            <div className="text-xs font-bold text-gray-500 mb-2 uppercase tracking-wide">English (1-55)</div>
+                                            <div className="grid grid-cols-5 sm:grid-cols-8 md:grid-cols-10 lg:grid-cols-5 gap-2 mb-4">
+                                                {activeExam.questions.slice(0, 55).map((q, idx) => renderQuestionButton(q, idx))}
+                                            </div>
+                                        </>
+                                    )}
+                                    {(isSubmitted || uatSection === 'math') && activeExam.questions.length > 55 && (
                                         <>
                                             <div className="text-xs font-bold text-gray-500 mb-2 uppercase tracking-wide border-t border-gray-100 pt-3">Mathematics (56+)</div>
                                             <div className="grid grid-cols-5 sm:grid-cols-8 md:grid-cols-10 lg:grid-cols-5 gap-2 mb-2">
@@ -1420,15 +1546,36 @@ function App() {
                         {!isSubmitted ? (
                             <div className="flex flex-col gap-3 mt-4 border-t pt-4">
                                 <div className="text-sm text-gray-600 mb-1">Answered: <span className="font-bold">{Object.keys(answers).length}</span> / {activeExam.questions.length}</div>
-                                <button onClick={handleSubmit} className="w-full px-4 py-3 bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 transition-colors shadow-sm">
-                                    Submit Exam
-                                </button>
+                                
+                                {activeExam.type === 'UAT' && uatSection === 'english' ? (
+                                    <button onClick={handleStartMath} className="w-full px-4 py-3 bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 transition-colors shadow-sm">
+                                        Submit English & Start Math
+                                    </button>
+                                ) : (
+                                    <button onClick={handleSubmit} className="w-full px-4 py-3 bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 transition-colors shadow-sm">
+                                        Submit Exam
+                                    </button>
+                                )}
                             </div>
                         ) : (
                             <div className="flex flex-col gap-3 mt-4 pt-3 border-t border-gray-200">
-                                <div className="text-base font-normal text-gray-900">
-                                    Final Score: <span className="font-bold text-red-600">{score}</span> / {activeExam.questions.length}
-                                </div>
+                                {activeExam.type === 'UAT' ? (
+                                    <>
+                                        <div className="text-sm font-normal text-gray-900 flex justify-between">
+                                            English Score: <span className="font-bold text-blue-600">{englishScore} / 55</span>
+                                        </div>
+                                        <div className="text-sm font-normal text-gray-900 flex justify-between">
+                                            Math Score: <span className="font-bold text-purple-600">{mathScore} / {activeExam.questions.length > 55 ? activeExam.questions.length - 55 : 0}</span>
+                                        </div>
+                                        <div className="text-base font-bold text-gray-900 border-t pt-2 mt-1 flex justify-between">
+                                            Total Score: <span className="text-red-600">{score} / {activeExam.questions.length}</span>
+                                        </div>
+                                    </>
+                                ) : (
+                                    <div className="text-base font-normal text-gray-900">
+                                        Final Score: <span className="font-bold text-red-600">{score}</span> / {activeExam.questions.length}
+                                    </div>
+                                )}
                                 <div className="flex flex-col gap-2 mt-1">
                                     <button onClick={() => setShowResetModal(true)} className="w-full px-4 py-2 bg-white border border-gray-300 text-gray-800 font-medium text-sm rounded-lg hover:bg-gray-50 transition-colors">Retake Exam</button>
                                     <button onClick={openExportModal} className="w-full px-4 py-2 bg-purple-100 text-purple-800 font-medium text-sm rounded-lg hover:bg-purple-200 transition-colors flex justify-center items-center gap-2">
@@ -1546,13 +1693,13 @@ function App() {
                             </div>
 
                             <div className="mt-8 flex justify-between border-t border-gray-200 pt-5">
-                                <button onClick={() => setCurrentIndex(prev => Math.max(0, prev - 1))} disabled={currentIndex === 0} className={`px-5 py-2.5 rounded-lg font-medium flex items-center gap-2 ${currentIndex === 0 ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-white border border-gray-300 text-gray-700 hover:bg-gray-50'}`}>
+                                <button onClick={() => setCurrentIndex(prev => Math.max(0, prev - 1))} disabled={isPrevDisabled} className={`px-5 py-2.5 rounded-lg font-medium flex items-center gap-2 ${isPrevDisabled ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-white border border-gray-300 text-gray-700 hover:bg-gray-50'}`}>
                                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 19l-7-7 7-7" />
                                     </svg>
                                     Previous
                                 </button>
-                                <button onClick={() => setCurrentIndex(prev => Math.min(activeExam.questions.length - 1, prev + 1))} disabled={currentIndex === activeExam.questions.length - 1} className={`px-5 py-2.5 rounded-lg font-medium flex items-center gap-2 ${currentIndex === activeExam.questions.length - 1 ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`}>
+                                <button onClick={() => setCurrentIndex(prev => Math.min(activeExam.questions.length - 1, prev + 1))} disabled={isNextDisabled} className={`px-5 py-2.5 rounded-lg font-medium flex items-center gap-2 ${isNextDisabled ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`}>
                                     Next
                                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 5l7 7-7 7" />
