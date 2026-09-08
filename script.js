@@ -14,8 +14,130 @@ if (!firebase.apps.length) {
     firebase.initializeApp(firebaseConfig);
 }
 const db = firebase.firestore();
+const storage = firebase.storage();
 
-const parseBlockQuestions = (rawText, defaultPassageTitle, defaultPassage, defaultIsHTML, startIdx = 1) => {
+const ImageUploadZone = ({ currentImage, onUploadSuccess }) => {
+    const [isDragging, setIsDragging] = useState(false);
+    const [isProcessing, setIsProcessing] = useState(false);
+    const fileInputRef = useRef(null);
+
+    const handleFile = (file) => {
+        if (!file || !file.type.startsWith('image/')) {
+            alert('Please upload a valid image file.');
+            return;
+        }
+
+        setIsProcessing(true);
+        const reader = new FileReader();
+
+        reader.onload = (e) => {
+            const img = new Image();
+            img.src = e.target.result;
+            img.onload = () => {
+                // Automatically resize & compress the image so it fits into Firestore
+                const canvas = document.createElement('canvas');
+                const MAX_WIDTH = 800; // Resize large images to a max width of 800px
+                let width = img.width;
+                let height = img.height;
+
+                if (width > MAX_WIDTH) {
+                    height = Math.round(height * (MAX_WIDTH / width));
+                    width = MAX_WIDTH;
+                }
+
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0, width, height);
+
+                // Convert canvas image to compressed JPEG string (70% quality)
+                const compressedBase64 = canvas.toDataURL('image/jpeg', 0.7);
+                onUploadSuccess(compressedBase64);
+                setIsProcessing(false);
+            };
+        };
+
+        reader.onerror = () => {
+            alert("Failed to read image file.");
+            setIsProcessing(false);
+        };
+
+        reader.readAsDataURL(file);
+    };
+
+    const onDragOver = (e) => {
+        e.preventDefault();
+        setIsDragging(true);
+    };
+
+    const onDragLeave = () => {
+        setIsDragging(false);
+    };
+
+    const onDrop = (e) => {
+        e.preventDefault();
+        setIsDragging(false);
+        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+            handleFile(e.dataTransfer.files[0]);
+        }
+    };
+
+    return (
+        <div className="mt-3">
+            <div className="flex justify-between items-center mb-1">
+                <label className="block text-xs font-bold text-gray-800">Block Image Graphic</label>
+                {currentImage && (
+                    <button
+                        type="button"
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            onUploadSuccess('');
+                        }}
+                        className="text-[11px] font-semibold text-red-500 hover:text-red-700 hover:underline cursor-pointer"
+                    >
+                        ✕ Remove Image
+                    </button>
+                )}
+            </div>
+
+            <div
+                onDragOver={onDragOver}
+                onDragLeave={onDragLeave}
+                onDrop={onDrop}
+                onClick={() => !isProcessing && fileInputRef.current.click()}
+                className={`w-full border-2 border-dashed rounded-lg p-4 flex flex-col items-center justify-center text-center cursor-pointer transition-colors ${isDragging ? 'border-blue-500 bg-blue-50' : 'border-gray-300 hover:bg-gray-50'
+                    } ${isProcessing ? 'opacity-50 cursor-not-allowed' : ''}`}
+            >
+                <input
+                    type="file"
+                    accept="image/*"
+                    ref={fileInputRef}
+                    onChange={(e) => e.target.files && handleFile(e.target.files[0])}
+                    className="hidden"
+                />
+
+                {isProcessing ? (
+                    <span className="text-xs text-blue-600 font-bold animate-pulse">Compressing Image...</span>
+                ) : currentImage ? (
+                    <div className="relative w-full flex flex-col items-center">
+                        <img src={currentImage} alt="Uploaded block graphic" className="max-h-36 object-contain rounded shadow-sm border border-gray-200" />
+                        <span className="text-[10px] text-gray-500 mt-2 font-medium">Click or drag a new image to replace</span>
+                    </div>
+                ) : (
+                    <div className="flex flex-col items-center text-gray-400 hover:text-blue-500 transition-colors py-2">
+                        <svg className="w-8 h-8 mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"></path>
+                        </svg>
+                        <span className="text-xs font-semibold text-gray-600">Click or drag & drop an image here</span>
+                        <span className="text-[10px] text-gray-400 mt-0.5">Auto-compressed for fast loading</span>
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+};
+
+const parseBlockQuestions = (rawText, defaultPassageTitle, defaultPassage, defaultIsHTML, defaultBlockImage, startIdx = 1) => {
     if (!rawText.trim()) return [];
 
     const blocks = rawText.trim().split(/\n\s*\n/);
@@ -32,7 +154,7 @@ const parseBlockQuestions = (rawText, defaultPassageTitle, defaultPassage, defau
         let passageTitle = defaultPassageTitle || "";
         let passage = defaultPassage || "";
         let isHTML = defaultIsHTML || false;
-        let image = "";
+        let image = defaultBlockImage || "";
 
         lines.forEach(line => {
             const ansMatch = line.match(/^(?:Answer|Ans|Correct)[:\s]*([A-D])/i);
@@ -135,9 +257,8 @@ function App() {
     const [flagged, setFlagged] = useState({});
     const [flagReasons, setFlagReasons] = useState({});
     const [score, setScore] = useState(0);
-    
-    // NEW: Manage active section for UAT
-    const [uatSection, setUatSection] = useState(null); // 'english' | 'math' | null
+
+    const [uatSection, setUatSection] = useState(null);
 
     const [highScores, setHighScores] = useState(() => {
         try {
@@ -157,6 +278,16 @@ function App() {
         }
     });
 
+    const [examBlocks, setExamBlocks] = useState([
+        { id: 1, startQ: 1, endQ: 60, passageTitle: '', passage: '', isHTML: false, blockImage: '', rawText: '' }
+    ]);
+    const [uatEnglishBlocks, setUatEnglishBlocks] = useState([
+        { id: 1, startQ: 1, endQ: 55, passageTitle: '', passage: '', isHTML: false, blockImage: '', rawText: '' }
+    ]);
+    const [uatMathBlocks, setUatMathBlocks] = useState([
+        { id: 2, startQ: 56, endQ: 100, passageTitle: '', passage: '', isHTML: false, blockImage: '', rawText: '' }
+    ]);
+
     const [searchQuery, setSearchQuery] = useState('');
     const [selectedSubjectFilter, setSelectedSubjectFilter] = useState('All');
     const [customSubjects, setCustomSubjects] = useState(['Mathematics', 'Physics', 'Chemistry', 'Biology', 'English']);
@@ -170,17 +301,7 @@ function App() {
     const [examDuration, setExamDuration] = useState(60);
     const [examDescription, setExamDescription] = useState('');
     const [totalQuestions, setTotalQuestions] = useState(60);
-    
-    const [examBlocks, setExamBlocks] = useState([
-        { id: 1, startQ: 1, endQ: 60, passageTitle: '', passage: '', isHTML: false, rawText: '' }
-    ]);
-    const [uatEnglishBlocks, setUatEnglishBlocks] = useState([
-        { id: 1, startQ: 1, endQ: 55, passageTitle: '', passage: '', isHTML: false, rawText: '' }
-    ]);
-    const [uatMathBlocks, setUatMathBlocks] = useState([
-        { id: 2, startQ: 56, endQ: 100, passageTitle: '', passage: '', isHTML: false, rawText: '' }
-    ]);
-    
+
     const [isSavingExam, setIsSavingExam] = useState(false);
 
     const [editingExam, setEditingExam] = useState(null);
@@ -223,7 +344,6 @@ function App() {
         if (timerStatus === 'running' && timeLeft > 0) {
             interval = setInterval(() => setTimeLeft((prev) => prev - 1), 1000);
         } else if (timeLeft === 0 && timerStatus === 'running') {
-            // Check if timer expired on English UAT, trigger Math phase automatically
             if (activeExam?.type === 'UAT' && uatSection === 'english') {
                 handleStartMath();
             } else {
@@ -253,7 +373,7 @@ function App() {
     const handleUpdateBlock = (index, field, value, sectionType = 'default') => {
         let targetBlocks = examBlocks;
         let setTargetBlocks = setExamBlocks;
-        
+
         if (sectionType === 'english') { targetBlocks = uatEnglishBlocks; setTargetBlocks = setUatEnglishBlocks; }
         if (sectionType === 'math') { targetBlocks = uatMathBlocks; setTargetBlocks = setUatMathBlocks; }
 
@@ -270,65 +390,69 @@ function App() {
     const handleAddBlock = (sectionType = 'default') => {
         let targetBlocks = examBlocks;
         let setTargetBlocks = setExamBlocks;
-        let maxBase = totalQuestions;
 
-        if (sectionType === 'english') { targetBlocks = uatEnglishBlocks; setTargetBlocks = setUatEnglishBlocks; maxBase = 55; }
-        if (sectionType === 'math') { targetBlocks = uatMathBlocks; setTargetBlocks = setUatMathBlocks; maxBase = 100; }
+        if (sectionType === 'english') { targetBlocks = uatEnglishBlocks; setTargetBlocks = setUatEnglishBlocks; }
+        if (sectionType === 'math') { targetBlocks = uatMathBlocks; setTargetBlocks = setUatMathBlocks; }
 
         const lastBlock = targetBlocks[targetBlocks.length - 1];
-        const nextStart = lastBlock.endQ + 1;
-        const nextEnd = Math.max(nextStart, maxBase);
-        setTargetBlocks([...targetBlocks, { id: Date.now(), startQ: nextStart, endQ: nextEnd, passageTitle: '', passage: '', isHTML: false, rawText: '' }]);
+        const nextStart = lastBlock ? lastBlock.endQ + 1 : 1;
+        let nextEnd = nextStart + 9;
+
+        if (sectionType === 'english') nextEnd = Math.min(nextStart + 9, 55);
+        if (sectionType === 'math') nextEnd = Math.min(nextStart + 9, 100);
+
+        setTargetBlocks([
+            ...targetBlocks,
+            { id: Date.now(), startQ: nextStart, endQ: nextEnd, passageTitle: '', passage: '', isHTML: false, blockImage: '', rawText: '' }
+        ]);
     };
 
     const handleRemoveBlock = (index, sectionType = 'default') => {
         let targetBlocks = examBlocks;
         let setTargetBlocks = setExamBlocks;
         let startBase = 1;
-        let maxBase = totalQuestions;
 
-        if (sectionType === 'english') { targetBlocks = uatEnglishBlocks; setTargetBlocks = setUatEnglishBlocks; maxBase = 55; }
-        if (sectionType === 'math') { targetBlocks = uatMathBlocks; setTargetBlocks = setUatMathBlocks; startBase = 56; maxBase = 100; }
+        if (sectionType === 'english') { targetBlocks = uatEnglishBlocks; setTargetBlocks = setUatEnglishBlocks; }
+        if (sectionType === 'math') { targetBlocks = uatMathBlocks; setTargetBlocks = setUatMathBlocks; startBase = 56; }
 
         if (targetBlocks.length <= 1) return;
         const updated = targetBlocks.filter((_, idx) => idx !== index);
-        
+
         let currentStart = startBase;
-        updated.forEach((b, idx) => {
+        updated.forEach((b) => {
+            const span = Math.max(0, b.endQ - b.startQ);
             b.startQ = currentStart;
-            if (idx === updated.length - 1) {
-                b.endQ = Math.max(currentStart, maxBase);
-            } else if (b.endQ < currentStart) {
-                b.endQ = currentStart + 5;
-            }
+            b.endQ = currentStart + span;
             currentStart = b.endQ + 1;
         });
         setTargetBlocks(updated);
     };
 
     const handleSaveExamToFirestore = async () => {
-        if (!examTitle || !examSubject) {
+        const effectiveSubject = examType === 'UAT' ? (examSubject || 'UAT') : examSubject;
+
+        if (!examTitle || (examType !== 'UAT' && !examSubject)) {
             alert("Please provide an Exam Title and Subject.");
             return;
         }
 
         let compiledQuestions = [];
-        
+
         if (examType === 'UAT') {
             uatEnglishBlocks.forEach((block) => {
                 if (block.rawText.trim()) {
-                    compiledQuestions = compiledQuestions.concat(parseBlockQuestions(block.rawText, block.passageTitle, block.passage, block.isHTML, block.startQ));
+                    compiledQuestions = compiledQuestions.concat(parseBlockQuestions(block.rawText, block.passageTitle, block.passage, block.isHTML, block.blockImage, block.startQ));
                 }
             });
             uatMathBlocks.forEach((block) => {
                 if (block.rawText.trim()) {
-                    compiledQuestions = compiledQuestions.concat(parseBlockQuestions(block.rawText, block.passageTitle, block.passage, block.isHTML, block.startQ));
+                    compiledQuestions = compiledQuestions.concat(parseBlockQuestions(block.rawText, block.passageTitle, block.passage, block.isHTML, block.blockImage, block.startQ));
                 }
             });
         } else {
             examBlocks.forEach((block) => {
                 if (block.rawText.trim()) {
-                    compiledQuestions = compiledQuestions.concat(parseBlockQuestions(block.rawText, block.passageTitle, block.passage, block.isHTML, block.startQ));
+                    compiledQuestions = compiledQuestions.concat(parseBlockQuestions(block.rawText, block.passageTitle, block.passage, block.isHTML, block.blockImage, block.startQ));
                 }
             });
         }
@@ -347,7 +471,7 @@ function App() {
             id: generatedId,
             title: examTitle,
             type: examType,
-            subject: examSubject,
+            subject: effectiveSubject,
             durationMinutes: examType === 'UAT' ? 150 : Number(examDuration),
             description: examDescription,
             questions: compiledQuestions,
@@ -364,9 +488,9 @@ function App() {
             setExamDuration(60);
             setExamDescription('');
             setTotalQuestions(60);
-            setExamBlocks([{ id: 1, startQ: 1, endQ: 60, passageTitle: '', passage: '', isHTML: false, rawText: '' }]);
-            setUatEnglishBlocks([{ id: 1, startQ: 1, endQ: 55, passageTitle: '', passage: '', isHTML: false, rawText: '' }]);
-            setUatMathBlocks([{ id: 2, startQ: 56, endQ: 100, passageTitle: '', passage: '', isHTML: false, rawText: '' }]);
+            setExamBlocks([{ id: 1, startQ: 1, endQ: 60, passageTitle: '', passage: '', isHTML: false, blockImage: '', rawText: '' }]);
+            setUatEnglishBlocks([{ id: 1, startQ: 1, endQ: 55, passageTitle: '', passage: '', isHTML: false, blockImage: '', rawText: '' }]);
+            setUatMathBlocks([{ id: 2, startQ: 56, endQ: 100, passageTitle: '', passage: '', isHTML: false, blockImage: '', rawText: '' }]);
             setShowAddModal(false);
 
             alert(`Exam successfully saved with ${compiledQuestions.length} questions!`);
@@ -424,7 +548,9 @@ function App() {
     };
 
     const handleSaveEditedExam = async () => {
-        if (!editingExam.title || !editingExam.subject || editQuestions.length === 0) {
+        const effectiveSubject = editingExam.type === 'UAT' ? (editingExam.subject || 'UAT') : editingExam.subject;
+
+        if (!editingExam.title || (editingExam.type !== 'UAT' && !editingExam.subject) || editQuestions.length === 0) {
             alert("Exam must have a title, subject, and at least one question.");
             return;
         }
@@ -432,6 +558,7 @@ function App() {
         setIsUpdatingExam(true);
         const updatedExamData = {
             ...editingExam,
+            subject: effectiveSubject,
             durationMinutes: Number(editingExam.durationMinutes),
             questions: editQuestions,
             updatedAt: firebase.firestore.FieldValue.serverTimestamp()
@@ -472,7 +599,7 @@ function App() {
             setInputHours(1);
             setInputMinutes(0);
             setInputSeconds(0);
-            setTimeLeft(3600); // 1 hour for English Phase
+            setTimeLeft(3600);
             setTimerStatus('running');
             setCurrentIndex(0);
         } else {
@@ -510,8 +637,8 @@ function App() {
 
     const handleStartMath = () => {
         setUatSection('math');
-        setCurrentIndex(55); // Jump to Question 56
-        setTimeLeft(5400); // Set to 90 Mins exactly
+        setCurrentIndex(55);
+        setTimeLeft(5400);
         setInputHours(1);
         setInputMinutes(30);
         setInputSeconds(0);
@@ -723,7 +850,6 @@ function App() {
         document.body.removeChild(textArea);
     };
 
-    // Helper Component Method for Block Building in Add Modal
     const renderBlockGroup = (blocksList, sectionType) => {
         let sectionTitle = "Question Blocks & Extendable Passages";
         if (sectionType === 'english') sectionTitle = "English Section (Questions 1-55)";
@@ -752,8 +878,7 @@ function App() {
                                             type="number"
                                             value={block.endQ}
                                             min={block.startQ}
-                                            max={sectionType === 'english' ? 55 : (sectionType === 'math' ? 100 : totalQuestions)}
-                                            onChange={(e) => handleUpdateBlock(bIdx, 'endQ', e.target.value, sectionType)}
+                                            max={sectionType === 'english' ? 55 : (sectionType === 'math' ? 100 : undefined)} onChange={(e) => handleUpdateBlock(bIdx, 'endQ', e.target.value, sectionType)}
                                             className="w-16 border border-gray-300 rounded p-1 text-xs font-bold text-center focus:ring-1 focus:ring-blue-500 outline-none"
                                         />
                                     </div>
@@ -794,8 +919,11 @@ function App() {
                                     placeholder="Paste Passage text or HTML table code here..."
                                     className="w-full border border-gray-300 rounded p-2 text-xs font-mono focus:ring-1 focus:ring-blue-500 outline-none"
                                 ></textarea>
+                                <ImageUploadZone
+                                    currentImage={block.blockImage}
+                                    onUploadSuccess={(url) => handleUpdateBlock(bIdx, 'blockImage', url, sectionType)}
+                                />
                             </div>
-
                             <div>
                                 <label className="block text-xs font-bold text-gray-700 mb-1">
                                     Questions Input for Block {bIdx + 1} (Questions {block.startQ} to {block.endQ})
@@ -828,7 +956,7 @@ function App() {
     const filteredExams = exams.filter(exam => {
         const matchesSearch = exam.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
             (exam.description && exam.description.toLowerCase().includes(searchQuery.toLowerCase())) ||
-            exam.subject.toLowerCase().includes(searchQuery.toLowerCase());
+            (exam.subject && exam.subject.toLowerCase().includes(searchQuery.toLowerCase()));
         const matchesSubject = selectedSubjectFilter === 'All' || exam.subject === selectedSubjectFilter;
         return matchesSearch && matchesSubject;
     });
@@ -930,9 +1058,11 @@ function App() {
                                     >
                                         <div className="flex flex-wrap justify-between items-start gap-2 mb-1">
                                             <div className="flex flex-wrap items-center gap-2">
-                                                <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold tracking-wider bg-blue-100 text-blue-800 uppercase border border-blue-200">
-                                                    {exam.subject}
-                                                </span>
+                                                {exam.subject && (exam.type !== 'UAT' || exam.subject.toUpperCase() !== 'UAT') && (
+                                                    <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold tracking-wider bg-blue-100 text-blue-800 uppercase border border-blue-200">
+                                                        {exam.subject}
+                                                    </span>
+                                                )}
                                                 {exam.type === 'UAT' && (
                                                     <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold tracking-wider bg-purple-100 text-purple-800 uppercase border border-purple-200">
                                                         UAT
@@ -1087,45 +1217,56 @@ function App() {
                                             <input type="text" value={examTitle} onChange={(e) => setExamTitle(e.target.value)} placeholder="e.g. Model Exam 2" className="w-full border border-gray-300 rounded-md p-2 text-xs focus:ring-2 focus:ring-blue-500 outline-none bg-white" />
                                         </div>
                                         <div>
-                                            <label className="block text-xs font-bold text-gray-700 mb-1">Subject *</label>
+                                            <label className="block text-xs font-bold text-gray-700 mb-1">Exam Type</label>
+                                            <select
+                                                value={examType}
+                                                onChange={(e) => {
+                                                    const selectedType = e.target.value;
+                                                    setExamType(selectedType);
+                                                    if (selectedType === 'UAT') {
+                                                        setExamSubject('UAT');
+                                                    }
+                                                }}
+                                                className="w-full border border-gray-300 rounded-md p-2 text-xs focus:ring-2 focus:ring-blue-500 outline-none bg-white"
+                                            >
+                                                <option value="default">Default</option>
+                                                <option value="UAT">UAT</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label className="block text-xs font-bold text-gray-700 mb-1">
+                                                Subject {examType === 'UAT' ? '(Auto: UAT)' : '*'}
+                                            </label>
                                             <div className="flex gap-1">
                                                 <select
-                                                    value={examSubject}
+                                                    value={examType === 'UAT' ? (examSubject || 'UAT') : examSubject}
                                                     onChange={(e) => setExamSubject(e.target.value)}
-                                                    className="w-full border border-gray-300 rounded-md p-2 text-xs focus:ring-2 focus:ring-blue-500 outline-none bg-white"
+                                                    disabled={examType === 'UAT'}
+                                                    className={`w-full border border-gray-300 rounded-md p-2 text-xs focus:ring-2 focus:ring-blue-500 outline-none bg-white ${examType === 'UAT' ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
                                                 >
                                                     <option value="" disabled>Select...</option>
                                                     {allAvailableSubjects.map(sub => <option key={sub} value={sub}>{sub}</option>)}
                                                 </select>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => {
-                                                        const newSub = window.prompt("Enter new subject name:");
-                                                        if (newSub && newSub.trim()) {
-                                                            setCustomSubjects(prev => [...prev, newSub.trim()]);
-                                                            setExamSubject(newSub.trim());
-                                                        }
-                                                    }}
-                                                    className="px-2 bg-blue-100 hover:bg-blue-200 text-blue-700 font-bold rounded border border-blue-200 text-xs"
-                                                >+</button>
+                                                {examType !== 'UAT' && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                            const newSub = window.prompt("Enter new subject name:");
+                                                            if (newSub && newSub.trim()) {
+                                                                setCustomSubjects(prev => [...prev, newSub.trim()]);
+                                                                setExamSubject(newSub.trim());
+                                                            }
+                                                        }}
+                                                        className="px-2 bg-blue-100 hover:bg-blue-200 text-blue-700 font-bold rounded border border-blue-200 text-xs"
+                                                    >+</button>
+                                                )}
                                             </div>
-                                        </div>
-                                        <div>
-                                            <label className="block text-xs font-bold text-gray-700 mb-1">Exam Type</label>
-                                            <select value={examType} onChange={(e) => setExamType(e.target.value)} className="w-full border border-gray-300 rounded-md p-2 text-xs focus:ring-2 focus:ring-blue-500 outline-none bg-white">
-                                                <option value="default">Default</option>
-                                                <option value="UAT">UAT</option>
-                                            </select>
                                         </div>
                                         {examType !== 'UAT' && (
                                             <>
                                                 <div>
                                                     <label className="block text-xs font-bold text-gray-700 mb-1">Duration (Mins)</label>
                                                     <input type="number" value={examDuration} onChange={(e) => setExamDuration(e.target.value)} min="1" className="w-full border border-gray-300 rounded-md p-2 text-xs focus:ring-2 focus:ring-blue-500 outline-none bg-white" />
-                                                </div>
-                                                <div>
-                                                    <label className="block text-xs font-bold text-gray-700 mb-1">Total Exam Qs</label>
-                                                    <input type="number" value={totalQuestions} onChange={(e) => handleTotalQuestionsChange(e.target.value)} min="1" className="w-full border border-gray-300 rounded-md p-2 text-xs font-bold text-blue-700 focus:ring-2 focus:ring-blue-500 outline-none bg-white" />
                                                 </div>
                                             </>
                                         )}
@@ -1180,14 +1321,33 @@ function App() {
                                         </div>
                                         <div>
                                             <label className="block text-sm font-semibold text-gray-700 mb-1">Exam Type</label>
-                                            <select value={editingExam.type || 'default'} onChange={(e) => setEditingExam({ ...editingExam, type: e.target.value })} className="w-full border border-gray-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white">
+                                            <select
+                                                value={editingExam.type || 'default'}
+                                                onChange={(e) => {
+                                                    const val = e.target.value;
+                                                    setEditingExam({
+                                                        ...editingExam,
+                                                        type: val,
+                                                        subject: val === 'UAT' && !editingExam.subject ? 'UAT' : editingExam.subject
+                                                    });
+                                                }}
+                                                className="w-full border border-gray-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white"
+                                            >
                                                 <option value="default">Default</option>
                                                 <option value="UAT">UAT</option>
                                             </select>
                                         </div>
                                         <div>
-                                            <label className="block text-sm font-semibold text-gray-700 mb-1">Subject</label>
-                                            <input type="text" value={editingExam.subject} onChange={(e) => setEditingExam({ ...editingExam, subject: e.target.value })} className="w-full border border-gray-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
+                                            <label className="block text-sm font-semibold text-gray-700 mb-1">
+                                                Subject {editingExam.type === 'UAT' ? '(Auto: UAT)' : ''}
+                                            </label>
+                                            <input
+                                                type="text"
+                                                value={editingExam.type === 'UAT' ? (editingExam.subject || 'UAT') : editingExam.subject}
+                                                onChange={(e) => setEditingExam({ ...editingExam, subject: e.target.value })}
+                                                disabled={editingExam.type === 'UAT'}
+                                                className={`w-full border border-gray-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none ${editingExam.type === 'UAT' ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
+                                            />
                                         </div>
                                         <div>
                                             <label className="block text-sm font-semibold text-gray-700 mb-1">Duration (Mins)</label>
@@ -1359,7 +1519,6 @@ function App() {
         );
     };
 
-    // Calculate UAT Split Scores For Rendering
     let englishScore = 0;
     let mathScore = 0;
     if (isSubmitted && activeExam.type === 'UAT') {
@@ -1512,7 +1671,6 @@ function App() {
                     <h1 className="text-3xl sm:text-4xl font-bold text-[#111827] mb-2">{activeExam.title}</h1>
                     <span className="px-3 py-1 bg-gray-100 text-gray-600 rounded-full text-sm font-medium">{activeExam.subject}</span>
                 </header>
-
                 <div className="flex flex-col lg:flex-row gap-6 relative">
                     <aside className="w-full lg:w-72 shrink-0 lg:sticky lg:top-6 h-fit bg-white rounded-lg border border-gray-200 shadow-sm p-4 order-2 lg:order-1">
                         <h3 className="text-lg font-bold text-gray-900 mb-3 border-b pb-2">Questions</h3>
@@ -1546,7 +1704,7 @@ function App() {
                         {!isSubmitted ? (
                             <div className="flex flex-col gap-3 mt-4 border-t pt-4">
                                 <div className="text-sm text-gray-600 mb-1">Answered: <span className="font-bold">{Object.keys(answers).length}</span> / {activeExam.questions.length}</div>
-                                
+
                                 {activeExam.type === 'UAT' && uatSection === 'english' ? (
                                     <button onClick={handleStartMath} className="w-full px-4 py-3 bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 transition-colors shadow-sm">
                                         Submit English & Start Math
