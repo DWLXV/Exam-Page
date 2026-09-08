@@ -229,7 +229,6 @@ const MathText = ({ text }) => {
 
     return <span ref={containerRef} />;
 };
-
 const Passage = ({ title, text, isHTML }) => {
     const [isOpen, setIsOpen] = useState(false);
     return (
@@ -359,6 +358,59 @@ function App() {
         }
     }, [currentView]);
 
+    useEffect(() => {
+        const handleBeforeUnload = (e) => {
+            if (currentView === 'exam' && timerStatus === 'running') {
+                e.preventDefault();
+                e.returnValue = '';
+            }
+        };
+        window.addEventListener('beforeunload', handleBeforeUnload);
+        return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+    }, [currentView, timerStatus]);
+
+    // 2. Auto-save exam state to localStorage
+    useEffect(() => {
+        if (currentView === 'exam' && activeExam) {
+            const activeSession = {
+                activeExamId: activeExam.id,
+                answers,
+                timeLeft,
+                currentIndex,
+                uatSection,
+                timerStatus
+            };
+            localStorage.setItem('exam_in_progress', JSON.stringify(activeSession));
+        }
+    }, [currentView, activeExam, answers, timeLeft, currentIndex, uatSection, timerStatus]);
+
+    // 3. Restore exam session after exams load
+    useEffect(() => {
+        if (!loadingExams && exams.length > 0 && currentView === 'dashboard') {
+            const savedSessionStr = localStorage.getItem('exam_in_progress');
+            if (savedSessionStr) {
+                try {
+                    const sessionData = JSON.parse(savedSessionStr);
+                    const examToRestore = exams.find(e => e.id === sessionData.activeExamId);
+
+                    if (examToRestore) {
+                        setActiveExam(examToRestore);
+                        setAnswers(sessionData.answers || {});
+                        setTimeLeft(sessionData.timeLeft);
+                        setCurrentIndex(sessionData.currentIndex || 0);
+                        setUatSection(sessionData.uatSection || null);
+                        setTimerStatus(sessionData.timerStatus || 'running');
+                        setCurrentView('exam');
+                    }
+                } catch (e) {
+                    console.error("Failed to restore exam session", e);
+                    localStorage.removeItem('exam_in_progress');
+                }
+            }
+        }
+    }, [loadingExams, exams]);
+
+
     const handleTotalQuestionsChange = (val) => {
         const count = Math.max(1, Number(val));
         setTotalQuestions(count);
@@ -465,7 +517,8 @@ function App() {
         }
 
         setIsSavingExam(true);
-        const generatedId = examTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || `exam-${Date.now()}`;
+        const titleSlug = examTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'exam';
+        const generatedId = `${titleSlug}-${Date.now()}`;
 
         const newExamObj = {
             id: generatedId,
@@ -583,6 +636,22 @@ function App() {
         try {
             await db.collection('exams').doc(examToDelete.id).delete();
             setExams(prev => prev.filter(e => e.id !== examToDelete.id));
+
+            // Clean up history logs and high scores for deleted exam ID
+            setExamHistory(prev => {
+                const updated = { ...prev };
+                delete updated[examToDelete.id];
+                try { localStorage.setItem('exam_history_logs', JSON.stringify(updated)); } catch (e) { }
+                return updated;
+            });
+
+            setHighScores(prev => {
+                const updated = { ...prev };
+                delete updated[examToDelete.id];
+                try { localStorage.setItem('exam_high_scores', JSON.stringify(updated)); } catch (e) { }
+                return updated;
+            });
+
             setExamToDelete(null);
         } catch (err) {
             console.error("Error deleting exam:", err);
@@ -682,6 +751,8 @@ function App() {
             return updated;
         });
 
+        localStorage.removeItem('exam_in_progress');
+
         setCurrentView('results');
         setTimerStatus('finished');
     };
@@ -768,6 +839,9 @@ function App() {
         setCurrentIndex(0);
         setTimerStatus('idle');
         setUatSection(null);
+
+        localStorage.removeItem('exam_in_progress');
+
         setCurrentView('dashboard');
     };
 
@@ -1545,6 +1619,9 @@ function App() {
         isNextDisabled = currentIndex === activeExam.questions.length - 1;
     }
 
+    const finalScorePct = activeExam?.questions?.length ? Math.round((score / activeExam.questions.length) * 100) : 0;
+    const scoreColorClass = finalScorePct >= 75 ? "text-emerald-600" : finalScorePct >= 50 ? "text-amber-500" : "text-rose-600";
+
     return (
         <div className="min-h-screen py-4 px-4 sm:px-6 lg:px-8 relative pb-20">
             {showResetModal && (
@@ -1703,7 +1780,19 @@ function App() {
 
                         {!isSubmitted ? (
                             <div className="flex flex-col gap-3 mt-4 border-t pt-4">
-                                <div className="text-sm text-gray-600 mb-1">Answered: <span className="font-bold">{Object.keys(answers).length}</span> / {activeExam.questions.length}</div>
+                                {activeExam.type === 'UAT' ? (
+                                    <div className="text-sm text-gray-600 mb-1">
+                                        Answered: <span className="font-bold">
+                                            {uatSection === 'english'
+                                                ? activeExam.questions.slice(0, 55).filter(q => answers[q.id]).length
+                                                : activeExam.questions.slice(55).filter(q => answers[q.id]).length}
+                                        </span> / {uatSection === 'english' ? 55 : Math.max(0, activeExam.questions.length - 55)}
+                                    </div>
+                                ) : (
+                                    <div className="text-sm text-gray-600 mb-1">
+                                        Answered: <span className="font-bold">{Object.keys(answers).length}</span> / {activeExam.questions.length}
+                                    </div>
+                                )}
 
                                 {activeExam.type === 'UAT' && uatSection === 'english' ? (
                                     <button onClick={handleStartMath} className="w-full px-4 py-3 bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 transition-colors shadow-sm">
@@ -1726,12 +1815,12 @@ function App() {
                                             Math Score: <span className="font-bold text-purple-600">{mathScore} / {activeExam.questions.length > 55 ? activeExam.questions.length - 55 : 0}</span>
                                         </div>
                                         <div className="text-base font-bold text-gray-900 border-t pt-2 mt-1 flex justify-between">
-                                            Total Score: <span className="text-red-600">{score} / {activeExam.questions.length}</span>
+                                            Total Score: <span className={scoreColorClass}>{score} / {activeExam.questions.length}</span>
                                         </div>
                                     </>
                                 ) : (
                                     <div className="text-base font-normal text-gray-900">
-                                        Final Score: <span className="font-bold text-red-600">{score}</span> / {activeExam.questions.length}
+                                        Final Score: <span className={`font-bold ${scoreColorClass}`}>{score}</span> / {activeExam.questions.length}
                                     </div>
                                 )}
                                 <div className="flex flex-col gap-2 mt-1">
