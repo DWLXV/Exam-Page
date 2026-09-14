@@ -16,9 +16,6 @@ if (!firebase.apps.length) {
 const db = firebase.firestore();
 const storage = firebase.storage();
 
-const auth = firebase.auth();
-const googleProvider = new firebase.auth.GoogleAuthProvider();
-
 const ImageUploadZone = ({ currentImage, onUploadSuccess }) => {
     const [isDragging, setIsDragging] = useState(false);
     const [isProcessing, setIsProcessing] = useState(false);
@@ -259,13 +256,8 @@ function App() {
     const [flagged, setFlagged] = useState({});
     const [flagReasons, setFlagReasons] = useState({});
     const [score, setScore] = useState(0);
-    const [currentUser, setCurrentUser] = useState(null);
-    const [isAdmin, setIsAdmin] = useState(false);
-    const [authLoading, setAuthLoading] = useState(true);
 
     const [uatSection, setUatSection] = useState(null);
-
-    const ADMIN_EMAIL = "eyob5524@gmail.com";
 
     const [highScores, setHighScores] = useState(() => {
         try {
@@ -417,58 +409,7 @@ function App() {
             }
         }
     }, [loadingExams, exams]);
-    useEffect(() => {
-        const unsubscribe = auth.onAuthStateChanged((user) => {
-            if (user) {
-                setCurrentUser(user);
-                setIsAdmin(user.email === ADMIN_EMAIL);
-            } else {
-                setCurrentUser(null);
-                setIsAdmin(false);
-            }
-            setAuthLoading(false);
-        });
-        return () => unsubscribe();
-    }, []);
 
-    const handleLogin = async () => {
-        try {
-            await auth.signInWithPopup(googleProvider);
-        } catch (error) {
-            console.error("Login failed:", error);
-            alert("Failed to log in. Please try again.");
-        }
-    };
-
-    const handleLogout = () => {
-        auth.signOut();
-        // Clear local storage to prevent data leakage between accounts
-        localStorage.removeItem('exam_in_progress');
-        setCurrentView('dashboard');
-    };
-
-    // --- IF LOADING AUTH STATE ---
-    if (authLoading) {
-        return <div className="min-h-screen flex items-center justify-center bg-gray-50 text-gray-600 font-bold">Loading...</div>;
-    }
-
-    // --- IF NOT LOGGED IN ---
-    if (!currentUser) {
-        return (
-            <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
-                <div className="bg-white p-8 rounded-xl shadow-md max-w-md w-full text-center">
-                    <h1 className="text-2xl font-extrabold text-gray-900 mb-2">Exam Preparation Platform</h1>
-                    <p className="text-gray-500 text-sm mb-8">Sign in to access universal exams, save your history, and create private practice sets.</p>
-                    <button
-                        onClick={handleLogin}
-                        className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg transition-colors shadow-sm flex items-center justify-center gap-2"
-                    >
-                        Sign in with Google
-                    </button>
-                </div>
-            </div>
-        );
-    }
 
     const handleTotalQuestionsChange = (val) => {
         const count = Math.max(1, Number(val));
@@ -576,8 +517,8 @@ function App() {
         }
 
         setIsSavingExam(true);
-        const titleSlug = examTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'exam';
-        const generatedId = `${titleSlug}-${Date.now()}`;
+        const slug = examTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'exam';
+        const generatedId = `${slug}-${Date.now()}`;
 
         const newExamObj = {
             id: generatedId,
@@ -694,9 +635,8 @@ function App() {
         setIsDeleting(true);
         try {
             await db.collection('exams').doc(examToDelete.id).delete();
-            setExams(prev => prev.filter(e => e.id !== examToDelete.id));
 
-            // Clean up history logs and high scores for deleted exam ID
+            // 1. Remove history logs for deleted exam
             setExamHistory(prev => {
                 const updated = { ...prev };
                 delete updated[examToDelete.id];
@@ -704,6 +644,7 @@ function App() {
                 return updated;
             });
 
+            // 2. Remove high score for deleted exam
             setHighScores(prev => {
                 const updated = { ...prev };
                 delete updated[examToDelete.id];
@@ -711,6 +652,7 @@ function App() {
                 return updated;
             });
 
+            setExams(prev => prev.filter(e => e.id !== examToDelete.id));
             setExamToDelete(null);
         } catch (err) {
             console.error("Error deleting exam:", err);
@@ -719,7 +661,6 @@ function App() {
             setIsDeleting(false);
         }
     };
-
     const handleSelectExam = (exam) => {
         setActiveExam(exam);
         if (exam.type === 'UAT') {
@@ -1679,8 +1620,7 @@ function App() {
     }
 
     const finalScorePct = activeExam?.questions?.length ? Math.round((score / activeExam.questions.length) * 100) : 0;
-    const scoreColorClass = finalScorePct >= 75 ? "text-emerald-600" : finalScorePct >= 50 ? "text-amber-500" : "text-rose-600";
-
+    const scoreColorClass = finalScorePct >= 95 ? "text-emerald-600" : finalScorePct >= 90 ? "text-amber-500" : "text-rose-600";
     return (
         <div className="min-h-screen py-4 px-4 sm:px-6 lg:px-8 relative pb-20">
             {showResetModal && (
@@ -2019,61 +1959,5 @@ function App() {
         </div>
     );
 }
-
-// --- AUTHENTICATION LOGIC ---
-
-const btnLogin = document.getElementById('btn-login');
-const btnLogout = document.getElementById('btn-logout');
-const userProfile = document.getElementById('user-profile');
-const userName = document.getElementById('user-name');
-const userAvatar = document.getElementById('user-avatar');
-
-// 1. Google Sign-In Popup
-btnLogin.addEventListener('click', () => {
-    auth.signInWithPopup(googleProvider)
-        .then((result) => {
-            console.log("Successfully logged in:", result.user.displayName);
-        })
-        .catch((error) => {
-            console.error("Error during sign in:", error);
-            alert("Failed to sign in. Please try again.");
-        });
-});
-
-// 2. Logout
-btnLogout.addEventListener('click', () => {
-    auth.signOut().then(() => {
-        console.log("User signed out.");
-    }).catch((error) => {
-        console.error("Error signing out:", error);
-    });
-});
-
-// 3. Auth State Observer (Runs automatically on load and auth changes)
-auth.onAuthStateChanged((user) => {
-    if (user) {
-        // User is signed in.
-        btnLogin.classList.add('hidden');
-        userProfile.classList.remove('hidden');
-
-        // Populate UI with user data
-        userName.textContent = user.displayName;
-        userAvatar.src = user.photoURL;
-
-        // TODO: Call your function to load/fetch private exams or history here
-        // e.g., loadDashboard(user.uid);
-
-    } else {
-        // No user is signed in.
-        btnLogin.classList.remove('hidden');
-        userProfile.classList.add('hidden');
-
-        userName.textContent = "";
-        userAvatar.src = "";
-
-        // TODO: Call your function to restrict view to Universal exams only here
-        // e.g., clearPrivateData();
-    }
-});
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App />);
