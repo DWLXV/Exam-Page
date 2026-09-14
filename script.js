@@ -1630,9 +1630,19 @@ function App() {
 
     const scoreColorClass = finalScorePct === 100 ? "text-yellow-500" : finalScorePct >= 95 ? "text-emerald-600" : finalScorePct >= 90 ? "text-amber-500" : "text-rose-600";
 
-    const displayScoreText = finalScorePct === 100 ? `👑 100%` : `${finalScorePct}%`;
+    const displayScoreText = finalScorePct === 100 ? (
+        <span><span className="animate-crown">👑</span> 100%</span>
+    ) : `${finalScorePct}%`;
+
+    // The return statement and main container were missing here!
     return (
         <div className="min-h-screen py-4 px-4 sm:px-6 lg:px-8 relative pb-20">
+            
+            {/* The celebration overlay */}
+            {isSubmitted && finalScorePct === 100 && (
+                <div className="fixed inset-0 pointer-events-none z-50 animate-cyan-bg"></div>
+            )}
+
             {showResetModal && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 transition-opacity">
                     <div className="bg-white rounded-lg shadow-xl p-6 max-w-sm w-full mx-4">
@@ -1645,6 +1655,7 @@ function App() {
                     </div>
                 </div>
             )}
+
             {showExitConfirmModal && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 transition-opacity">
                     <div className="bg-white rounded-lg shadow-xl p-6 max-w-sm w-full mx-4">
