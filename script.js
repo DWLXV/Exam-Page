@@ -16,6 +16,9 @@ if (!firebase.apps.length) {
 const db = firebase.firestore();
 const storage = firebase.storage();
 
+const auth = firebase.auth();
+const googleProvider = new firebase.auth.GoogleAuthProvider();
+
 const ImageUploadZone = ({ currentImage, onUploadSuccess }) => {
     const [isDragging, setIsDragging] = useState(false);
     const [isProcessing, setIsProcessing] = useState(false);
@@ -256,26 +259,17 @@ function App() {
     const [flagged, setFlagged] = useState({});
     const [flagReasons, setFlagReasons] = useState({});
     const [score, setScore] = useState(0);
-
+    const [currentUser, setCurrentUser] = useState(null);
+    const [isAdmin, setIsAdmin] = useState(false);
+    const [authLoading, setAuthLoading] = useState(true);
+    const [isPublicExam, setIsPublicExam] = useState(false);
     const [uatSection, setUatSection] = useState(null);
 
-    const [highScores, setHighScores] = useState(() => {
-        try {
-            const saved = localStorage.getItem('exam_high_scores');
-            return saved ? JSON.parse(saved) : {};
-        } catch (e) {
-            return {};
-        }
-    });
+    const ADMIN_EMAIL = "eyob5524@gmail.com";
 
-    const [examHistory, setExamHistory] = useState(() => {
-        try {
-            const saved = localStorage.getItem('exam_history_logs');
-            return saved ? JSON.parse(saved) : {};
-        } catch (e) {
-            return {};
-        }
-    });
+    const [highScores, setHighScores] = useState({});
+
+    const [examHistory, setExamHistory] = useState({});
 
     const [examBlocks, setExamBlocks] = useState([
         { id: 1, startQ: 1, endQ: 60, passageTitle: '', passage: '', isHTML: false, blockImage: '', rawText: '' }
@@ -324,11 +318,26 @@ function App() {
     const [copySuccess, setCopySuccess] = useState(false);
 
     useEffect(() => {
+        // Only fetch exams if a user is logged in
+        if (!currentUser) return;
+
         const fetchExams = async () => {
             try {
-                const snapshot = await db.collection('exams').get();
-                const fetchedList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                setExams(fetchedList);
+                // 1. Fetch Universal/Public Exams
+                const publicSnapshot = await db.collection('exams')
+                    .where('isPublic', '==', true)
+                    .get();
+                const publicExams = publicSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+                // 2. Fetch User's Private Exams
+                const privateSnapshot = await db.collection('exams')
+                    .where('createdBy', '==', currentUser.uid)
+                    .where('isPublic', '==', false)
+                    .get();
+                const privateExams = privateSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+                // Combine and set state
+                setExams([...publicExams, ...privateExams]);
             } catch (err) {
                 console.error("Error fetching exams: ", err);
             } finally {
@@ -336,7 +345,7 @@ function App() {
             }
         };
         fetchExams();
-    }, []);
+    }, [currentUser]); // Add currentUser as a dependency
 
     useEffect(() => {
         let interval = null;
@@ -409,7 +418,72 @@ function App() {
             }
         }
     }, [loadingExams, exams]);
+    useEffect(() => {
+        const unsubscribe = auth.onAuthStateChanged(async (user) => {
+            if (user) {
+                setCurrentUser(user);
+                setIsAdmin(user.email === ADMIN_EMAIL);
 
+                // NEW: Fetch user's saved history from Firestore
+                try {
+                    const userDoc = await db.collection('users').doc(user.uid).get();
+                    if (userDoc.exists) {
+                        const data = userDoc.data();
+                        setHighScores(data.highScores || {});
+                        setExamHistory(data.examHistory || {});
+                    }
+                } catch (err) {
+                    console.error("Error fetching user history:", err);
+                }
+            } else {
+                setCurrentUser(null);
+                setIsAdmin(false);
+                setHighScores({});
+                setExamHistory({});
+            }
+            setAuthLoading(false);
+        });
+        return () => unsubscribe();
+    }, []);
+
+    const handleLogin = async () => {
+        try {
+            await auth.signInWithPopup(googleProvider);
+        } catch (error) {
+            console.error("Login failed:", error);
+            alert("Failed to log in. Please try again.");
+        }
+    };
+
+    const handleLogout = () => {
+        auth.signOut();
+        // Clear local storage to prevent data leakage between accounts
+        localStorage.removeItem('exam_in_progress');
+        setCurrentView('dashboard');
+    };
+
+    // --- IF LOADING AUTH STATE ---
+    if (authLoading) {
+        return <div className="min-h-screen flex items-center justify-center bg-gray-50 text-gray-600 font-bold">Loading...</div>;
+    }
+
+    // --- IF NOT LOGGED IN ---
+    if (!currentUser) {
+        return (
+            <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+                <div className="bg-white p-8 rounded-xl shadow-md max-w-md w-full text-center">
+                    <h1 className="text-2xl font-extrabold text-gray-900 mb-2">Exam Preparation Platform</h1>
+                    <p className="text-gray-500 text-sm mb-8">Sign in to access universal exams, save your history, and create private practice sets.</p>
+                    <button
+                        onClick={handleLogin}
+                        className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg transition-colors shadow-sm flex items-center justify-center gap-2"
+                    >
+                        Sign in with Google
+                    </button>
+                </div>
+            </div>
+        );
+    }
 
     const handleTotalQuestionsChange = (val) => {
         const count = Math.max(1, Number(val));
@@ -528,7 +602,10 @@ function App() {
             durationMinutes: examType === 'UAT' ? 150 : Number(examDuration),
             description: examDescription,
             questions: compiledQuestions,
-            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+            createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+            // NEW: Attach ownership and visibility
+            createdBy: currentUser.uid,
+            isPublic: isAdmin ? isPublicExam : false
         };
 
         try {
@@ -558,6 +635,19 @@ function App() {
     const handleOpenEditModal = (exam) => {
         setEditingExam({ ...exam });
         setEditQuestions(JSON.parse(JSON.stringify(exam.questions || [])));
+
+        {
+            (exam.createdBy === currentUser.uid || (isAdmin && exam.isPublic)) && (
+                <>
+                    <button onClick={() => handleOpenEditModal(exam)} title="Edit Exam" className="p-1 text-gray-400 hover:text-blue-600 transition-colors">
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
+                    </button>
+                    <button onClick={() => setExamToDelete(exam)} title="Delete Exam Set" className="p-1 text-gray-400 hover:text-red-600 transition-colors">
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                    </button>
+                </>
+            )
+        }
     };
 
     const handleUpdateQuestionField = (qIdx, field, val) => {
@@ -714,7 +804,7 @@ function App() {
         setTimerStatus('running');
     };
 
-    const handleSubmit = () => {
+    const handleSubmit = async () => {
         let finalScore = 0;
         activeExam.questions.forEach(q => {
             if (answers[q.id] === q.correctAnswer) finalScore++;
@@ -724,16 +814,6 @@ function App() {
         const totalQ = activeExam.questions.length || 1;
         const scorePct = Math.round((finalScore / totalQ) * 100);
 
-        setHighScores(prev => {
-            const previousHigh = prev[activeExam.id] !== undefined ? prev[activeExam.id] : -1;
-            const newHigh = Math.max(previousHigh, scorePct);
-            const updated = { ...prev, [activeExam.id]: newHigh };
-            try {
-                localStorage.setItem('exam_high_scores', JSON.stringify(updated));
-            } catch (e) { }
-            return updated;
-        });
-
         const newRecord = {
             score: finalScore,
             total: totalQ,
@@ -741,18 +821,32 @@ function App() {
             date: new Date().toISOString()
         };
 
-        setExamHistory(prev => {
-            const updated = { ...prev };
-            if (!updated[activeExam.id]) updated[activeExam.id] = [];
-            updated[activeExam.id].push(newRecord);
-            try {
-                localStorage.setItem('exam_history_logs', JSON.stringify(updated));
-            } catch (e) { }
-            return updated;
-        });
+        // Calculate updated objects
+        const updatedHighScores = {
+            ...highScores,
+            [activeExam.id]: Math.max((highScores[activeExam.id] || -1), scorePct)
+        };
+
+        const updatedHistory = { ...examHistory };
+        if (!updatedHistory[activeExam.id]) updatedHistory[activeExam.id] = [];
+        updatedHistory[activeExam.id].push(newRecord);
+
+        // Update local state
+        setHighScores(updatedHighScores);
+        setExamHistory(updatedHistory);
+
+        // NEW: Save to Firestore
+        try {
+            await db.collection('users').doc(currentUser.uid).set({
+                highScores: updatedHighScores,
+                examHistory: updatedHistory,
+                lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
+            }, { merge: true });
+        } catch (error) {
+            console.error("Failed to sync history to cloud", error);
+        }
 
         localStorage.removeItem('exam_in_progress');
-
         setCurrentView('results');
         setTimerStatus('finished');
     };
@@ -1375,7 +1469,20 @@ function App() {
                             </div>
                         </div>
                     )}
-
+                    {isAdmin && (
+                        <div className="md:col-span-3 lg:col-span-5 mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded-md">
+                            <label className="flex items-center gap-2 text-sm font-bold text-yellow-900 cursor-pointer">
+                                <input
+                                    type="checkbox"
+                                    checked={isPublicExam}
+                                    onChange={(e) => setIsPublicExam(e.target.checked)}
+                                    className="w-4 h-4 text-yellow-600 rounded focus:ring-yellow-500"
+                                />
+                                Make this a Universal (Public) Exam
+                            </label>
+                            <p className="text-xs text-yellow-700 mt-1 ml-6">If checked, all users will be able to take this exam. If unchecked, it remains private to you.</p>
+                        </div>
+                    )}
                     {/* MODAL: EDIT EXISTING EXAM */}
                     {editingExam && (
                         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 p-4">
@@ -1620,8 +1727,7 @@ function App() {
     }
 
     const finalScorePct = activeExam?.questions?.length ? Math.round((score / activeExam.questions.length) * 100) : 0;
-    const scoreColorClass = finalScorePct >= 75 ? "text-emerald-600" : finalScorePct >= 50 ? "text-amber-500" : "text-rose-600";
-
+    const scoreColorClass = finalScorePct >= 95 ? "text-emerald-600" : finalScorePct >= 90 ? "text-amber-500" : "text-rose-600";
     return (
         <div className="min-h-screen py-4 px-4 sm:px-6 lg:px-8 relative pb-20">
             {showResetModal && (
@@ -1960,5 +2066,61 @@ function App() {
         </div>
     );
 }
+
+// --- AUTHENTICATION LOGIC ---
+
+const btnLogin = document.getElementById('btn-login');
+const btnLogout = document.getElementById('btn-logout');
+const userProfile = document.getElementById('user-profile');
+const userName = document.getElementById('user-name');
+const userAvatar = document.getElementById('user-avatar');
+
+// 1. Google Sign-In Popup
+btnLogin.addEventListener('click', () => {
+    auth.signInWithPopup(googleProvider)
+        .then((result) => {
+            console.log("Successfully logged in:", result.user.displayName);
+        })
+        .catch((error) => {
+            console.error("Error during sign in:", error);
+            alert("Failed to sign in. Please try again.");
+        });
+});
+
+// 2. Logout
+btnLogout.addEventListener('click', () => {
+    auth.signOut().then(() => {
+        console.log("User signed out.");
+    }).catch((error) => {
+        console.error("Error signing out:", error);
+    });
+});
+
+// 3. Auth State Observer (Runs automatically on load and auth changes)
+auth.onAuthStateChanged((user) => {
+    if (user) {
+        // User is signed in.
+        btnLogin.classList.add('hidden');
+        userProfile.classList.remove('hidden');
+
+        // Populate UI with user data
+        userName.textContent = user.displayName;
+        userAvatar.src = user.photoURL;
+
+        // TODO: Call your function to load/fetch private exams or history here
+        // e.g., loadDashboard(user.uid);
+
+    } else {
+        // No user is signed in.
+        btnLogin.classList.remove('hidden');
+        userProfile.classList.add('hidden');
+
+        userName.textContent = "";
+        userAvatar.src = "";
+
+        // TODO: Call your function to restrict view to Universal exams only here
+        // e.g., clearPrivateData();
+    }
+});
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App />);
