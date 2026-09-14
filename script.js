@@ -1046,14 +1046,14 @@ function App() {
 
         const baseClass = "font-bold inline-block px-2 py-0.5 rounded-md text-[10px] border relative z-10 text-center min-w-[90px]";
 
-        if (scorePct >= 75) {
+        if (scorePct >= 95) {
             return {
                 cardBg: "bg-emerald-50/80 border-emerald-300 hover:border-emerald-400 shadow-sm",
                 badgeClass: `text-emerald-900 border-emerald-400 ${baseClass}`,
                 label: `${scorePct}%`,
                 gradient: `linear-gradient(to right, #6ee7b7 ${scorePct}%, #ecfdf5 ${scorePct}%)`
             };
-        } else if (scorePct >= 50) {
+        } else if (scorePct >= 90) {
             return {
                 cardBg: "bg-amber-50/80 border-amber-300 hover:border-amber-400 shadow-sm",
                 badgeClass: `text-amber-900 border-amber-400 ${baseClass}`,
