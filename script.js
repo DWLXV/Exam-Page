@@ -410,6 +410,57 @@ function App() {
         }
     }, [loadingExams, exams]);
 
+    // 4. Keyboard Shortcuts for Navigation and Selection
+    useEffect(() => {
+        const handleKeyDown = (e) => {
+            // Do nothing if the user is typing in a text field (e.g., search, flag reasons)
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+            // Only trigger during the exam or result review
+            if (currentView !== 'exam' && currentView !== 'results') return;
+
+            const isFinished = currentView === 'results';
+
+            if (e.key === 'ArrowRight') {
+                setCurrentIndex(prev => {
+                    let isNextDisabled = false;
+                    if (activeExam?.type === 'UAT' && !isFinished) {
+                        if (uatSection === 'english') isNextDisabled = prev === 54;
+                        else if (uatSection === 'math') isNextDisabled = prev === activeExam.questions.length - 1;
+                    } else {
+                        isNextDisabled = prev === (activeExam?.questions?.length || 1) - 1;
+                    }
+                    return isNextDisabled ? prev : prev + 1;
+                });
+            } else if (e.key === 'ArrowLeft') {
+                setCurrentIndex(prev => {
+                    let isPrevDisabled = false;
+                    if (activeExam?.type === 'UAT' && !isFinished) {
+                        if (uatSection === 'english') isPrevDisabled = prev === 0;
+                        else if (uatSection === 'math') isPrevDisabled = prev === 55;
+                    } else {
+                        isPrevDisabled = prev === 0;
+                    }
+                    return isPrevDisabled ? prev : prev - 1;
+                });
+            } else if (!isFinished) {
+                // Selection mapped to A, B, C, D keys
+                const key = e.key.toUpperCase();
+                const question = activeExam?.questions[currentIndex];
+
+                if (question && ['A', 'B', 'C', 'D', 'E'].includes(key)) {
+                    // Verify the option actually exists for this question
+                    const validOption = question.options.some(o => o.id === key);
+                    if (validOption) {
+                        setAnswers(prev => ({ ...prev, [question.id]: key }));
+                    }
+                }
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [currentView, activeExam, currentIndex, uatSection]);
 
     const handleTotalQuestionsChange = (val) => {
         const count = Math.max(1, Number(val));
@@ -1637,7 +1688,7 @@ function App() {
     // The return statement and main container were missing here!
     return (
         <div className="min-h-screen py-4 px-4 sm:px-6 lg:px-8 relative pb-20">
-            
+
             {/* The celebration overlay */}
             {isSubmitted && finalScorePct === 100 && (
                 <div className="fixed inset-0 pointer-events-none z-50 animate-cyan-bg"></div>
