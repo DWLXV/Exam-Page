@@ -1046,7 +1046,14 @@ function App() {
 
         const baseClass = "font-bold inline-block px-2 py-0.5 rounded-md text-[10px] border relative z-10 text-center min-w-[90px]";
 
-        if (scorePct >= 95) {
+        if (scorePct === 100) {
+            return {
+                cardBg: "bg-yellow-100/90 border-yellow-400 hover:border-yellow-500 shadow-md",
+                badgeClass: `text-yellow-900 border-yellow-500 font-bold ${baseClass}`,
+                label: `👑 100%`,
+                gradient: `linear-gradient(to right, #facc15 ${scorePct}%, #fefce8 ${scorePct}%)`
+            };
+        } else if (scorePct >= 95) {
             return {
                 cardBg: "bg-emerald-50/80 border-emerald-300 hover:border-emerald-400 shadow-sm",
                 badgeClass: `text-emerald-900 border-emerald-400 ${baseClass}`,
@@ -1620,7 +1627,10 @@ function App() {
     }
 
     const finalScorePct = activeExam?.questions?.length ? Math.round((score / activeExam.questions.length) * 100) : 0;
-    const scoreColorClass = finalScorePct >= 95 ? "text-emerald-600" : finalScorePct >= 90 ? "text-amber-500" : "text-rose-600";
+
+    const scoreColorClass = finalScorePct === 100 ? "text-yellow-500" : finalScorePct >= 95 ? "text-emerald-600" : finalScorePct >= 90 ? "text-amber-500" : "text-rose-600";
+
+    const displayScoreText = finalScorePct === 100 ? `👑 100%` : `${finalScorePct}%`;
     return (
         <div className="min-h-screen py-4 px-4 sm:px-6 lg:px-8 relative pb-20">
             {showResetModal && (
@@ -1818,8 +1828,8 @@ function App() {
                                         </div>
                                     </>
                                 ) : (
-                                    <div className="text-base font-normal text-gray-900">
-                                        Final Score: <span className={`font-bold ${scoreColorClass}`}>{score}</span> / {activeExam.questions.length}
+                                    <div className={`text-4xl font-extrabold ${scoreColorClass}`}>
+                                        {displayScoreText}
                                     </div>
                                 )}
                                 <div className="flex flex-col gap-2 mt-1">
