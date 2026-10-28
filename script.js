@@ -249,6 +249,7 @@ const Passage = ({ title, text, isHTML }) => {
 function App() {
     const [exams, setExams] = useState([]);
     const [loadingExams, setLoadingExams] = useState(true);
+    const [fetchError, setFetchError] = useState(null); // Added to display Firebase errors
     const [currentView, setCurrentView] = useState('dashboard');
     const [activeExam, setActiveExam] = useState(null);
     const [currentIndex, setCurrentIndex] = useState(0);
@@ -293,13 +294,31 @@ function App() {
 
     const [selectedExamStats, setSelectedExamStats] = useState(null);
 
+    // ESSLCE / Entrance Exam Standard Time Allocation per Question (in minutes)
+    const SUBJECT_TIME_PER_QUESTION = {
+        'Mathematics': 3.0,  // 100 questions / 180 mins
+        'Physics': 2.5,      // 100 questions / 150 mins
+        'Aptitude': 2.0,     // 60 questions / 120 mins
+        'Chemistry': 1.875,    // 100 questions / 120 mins
+        'Biology': 1.5,      // 100 questions / 120 mins
+        'English': 1.2,      // 100 questions / 120 mins
+        'Default': 1.2
+    };
+
     const [showAddModal, setShowAddModal] = useState(false);
     const [examTitle, setExamTitle] = useState('');
     const [examType, setExamType] = useState('default');
     const [examSubject, setExamSubject] = useState('');
-    const [examDuration, setExamDuration] = useState(60);
     const [examDescription, setExamDescription] = useState('');
     const [totalQuestions, setTotalQuestions] = useState(60);
+
+    // Timer Mode Controls
+    const [useDefaultTimer, setUseDefaultTimer] = useState(true);
+    const [customTimerMode, setCustomTimerMode] = useState('perQuestion'); // 'perQuestion' or 'plainTotal'
+    const [customMinsPerQuestion, setCustomMinsPerQuestion] = useState(1.2);
+    const [plainHours, setPlainHours] = useState(1);
+    const [plainMinutes, setPlainMinutes] = useState(0);
+    const [plainSeconds, setPlainSeconds] = useState(0);
 
     const [isSavingExam, setIsSavingExam] = useState(false);
 
@@ -326,11 +345,13 @@ function App() {
     useEffect(() => {
         const fetchExams = async () => {
             try {
+                setFetchError(null);
                 const snapshot = await db.collection('exams').get();
                 const fetchedList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                 setExams(fetchedList);
             } catch (err) {
                 console.error("Error fetching exams: ", err);
+                setFetchError(err.message); // Captures the error to show on UI
             } finally {
                 setLoadingExams(false);
             }
@@ -571,12 +592,26 @@ function App() {
         const slug = examTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'exam';
         const generatedId = `${slug}-${Date.now()}`;
 
+        // Calculate timer dynamically based on questions count and user selection
+        let calculatedDurationMinutes = 60;
+        if (examType === 'UAT') {
+            calculatedDurationMinutes = 150;
+        } else if (useDefaultTimer) {
+            const rate = SUBJECT_TIME_PER_QUESTION[effectiveSubject] || SUBJECT_TIME_PER_QUESTION['Default'];
+            calculatedDurationMinutes = Math.round(compiledQuestions.length * rate);
+        } else if (customTimerMode === 'perQuestion') {
+            calculatedDurationMinutes = Math.round(compiledQuestions.length * Number(customMinsPerQuestion));
+        } else {
+            const totalSecs = (Number(plainHours) * 3600) + (Number(plainMinutes) * 60) + Number(plainSeconds);
+            calculatedDurationMinutes = Math.max(1, Math.round(totalSecs / 60));
+        }
+
         const newExamObj = {
             id: generatedId,
             title: examTitle,
             type: examType,
             subject: effectiveSubject,
-            durationMinutes: examType === 'UAT' ? 150 : Number(examDuration),
+            durationMinutes: calculatedDurationMinutes,
             description: examDescription,
             questions: compiledQuestions,
             createdAt: firebase.firestore.FieldValue.serverTimestamp()
@@ -713,26 +748,26 @@ function App() {
         }
     };
     const shuffleArray = (array) => {
-    const arr = [...array];
-    for (let i = arr.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [arr[i], arr[j]] = [arr[j], arr[i]];
-    }
-    return arr;
-};
+        const arr = [...array];
+        for (let i = arr.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [arr[i], arr[j]] = [arr[j], arr[i]];
+        }
+        return arr;
+    };
 
-const handleSelectExam = (exam) => {
-    let shuffledQuestions = [...(exam.questions || [])];
-    if (exam.type === 'UAT') {
-        const englishPart = shuffleArray(shuffledQuestions.slice(0, 55));
-        const mathPart = shuffleArray(shuffledQuestions.slice(55));
-        shuffledQuestions = [...englishPart, ...mathPart];
-    } else {
-        shuffledQuestions = shuffleArray(shuffledQuestions);
-    }
+    const handleSelectExam = (exam) => {
+        let shuffledQuestions = [...(exam.questions || [])];
+        if (exam.type === 'UAT') {
+            const englishPart = shuffleArray(shuffledQuestions.slice(0, 55));
+            const mathPart = shuffleArray(shuffledQuestions.slice(55));
+            shuffledQuestions = [...englishPart, ...mathPart];
+        } else {
+            shuffledQuestions = shuffleArray(shuffledQuestions);
+        }
 
-    setActiveExam({ ...exam, questions: shuffledQuestions });
-    if (exam.type === 'UAT') {
+        setActiveExam({ ...exam, questions: shuffledQuestions });
+        if (exam.type === 'UAT') {
             setUatSection('english');
             setInputHours(1);
             setInputMinutes(0);
@@ -1190,6 +1225,12 @@ const handleSelectExam = (exam) => {
 
                     {loadingExams ? (
                         <div className="text-center py-12 text-gray-500">Loading exams from Firestore...</div>
+                    ) : fetchError ? (
+                        <div className="text-center py-12 bg-red-50 rounded-xl border border-red-200 p-8 shadow-sm">
+                            <p className="text-red-700 font-bold text-base mb-1">Failed to load exams from Firebase</p>
+                            <p className="text-red-500 font-mono text-xs mb-3">{fetchError}</p>
+                            <p className="text-gray-600 text-xs">Check your Firestore Security Rules or ensure your Firebase v8 CDN scripts are included in your HTML file.</p>
+                        </div>
                     ) : filteredExams.length === 0 ? (
                         <div className="text-center py-12 bg-white rounded-xl border border-dashed border-gray-300 p-8">
                             <p className="text-gray-500 mb-4">No matching exams found.</p>
@@ -1361,7 +1402,7 @@ const handleSelectExam = (exam) => {
                                 </div>
 
                                 <div className="p-6 overflow-y-auto flex-1">
-                                    <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4 bg-gray-50 p-4 rounded-lg border border-gray-200 mb-6">
+                                   <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4 bg-gray-50 p-4 rounded-lg border border-gray-200 mb-6">
                                         <div>
                                             <label className="block text-xs font-bold text-gray-700 mb-1">Exam Title *</label>
                                             <input type="text" value={examTitle} onChange={(e) => setExamTitle(e.target.value)} placeholder="e.g. Model Exam 2" className="w-full border border-gray-300 rounded-md p-2 text-xs focus:ring-2 focus:ring-blue-500 outline-none bg-white" />
@@ -1412,642 +1453,707 @@ const handleSelectExam = (exam) => {
                                                 )}
                                             </div>
                                         </div>
+
+                                        {/* DYNAMIC TIMER CONFIGURATION BLOCK */}
                                         {examType !== 'UAT' && (
-                                            <>
-                                                <div>
-                                                    <label className="block text-xs font-bold text-gray-700 mb-1">Duration (Mins)</label>
-                                                    <input type="number" value={examDuration} onChange={(e) => setExamDuration(e.target.value)} min="1" className="w-full border border-gray-300 rounded-md p-2 text-xs focus:ring-2 focus:ring-blue-500 outline-none bg-white" />
+                                            <div className="md:col-span-3 lg:col-span-2 bg-white p-3 rounded-lg border border-blue-200 shadow-sm space-y-2">
+                                                <div className="flex items-center justify-between">
+                                                    <span className="text-xs font-bold text-blue-900">Timer Settings</span>
+                                                    <label className="flex items-center gap-1.5 text-xs font-semibold text-gray-700 cursor-pointer">
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={useDefaultTimer}
+                                                            onChange={(e) => setUseDefaultTimer(e.target.checked)}
+                                                            className="rounded text-blue-600 focus:ring-blue-500"
+                                                        />
+                                                        <span>Default Exam Timing</span>
+                                                    </label>
                                                 </div>
-                                            </>
+
+                                                {useDefaultTimer ? (
+                                                    <p className="text-[11px] text-gray-600 bg-blue-50 p-2 rounded border border-blue-100 leading-tight">
+                                                        ✨ Standard entrance rate for <strong className="text-blue-800">{examSubject || 'this subject'}</strong> ({SUBJECT_TIME_PER_QUESTION[examSubject] || SUBJECT_TIME_PER_QUESTION['Default']} min/Q) multiplied by question count.
+                                                    </p>
+                                                ) : (
+                                                    <div className="space-y-2 pt-1">
+                                                        <div className="flex gap-3 text-[11px] font-semibold text-gray-700">
+                                                            <label className="flex items-center gap-1 cursor-pointer">
+                                                                <input
+                                                                    type="radio"
+                                                                    name="timerMode"
+                                                                    checked={customTimerMode === 'perQuestion'}
+                                                                    onChange={() => setCustomTimerMode('perQuestion')}
+                                                                    className="text-blue-600"
+                                                                />
+                                                                Per Min / Question
+                                                            </label>
+                                                            <label className="flex items-center gap-1 cursor-pointer">
+                                                                <input
+                                                                    type="radio"
+                                                                    name="timerMode"
+                                                                    checked={customTimerMode === 'plainTotal'}
+                                                                    onChange={() => setCustomTimerMode('plainTotal')}
+                                                                    className="text-blue-600"
+                                                                />
+                                                                Plain Total Time
+                                                            </label>
+                                                        </div>
+
+                                                        {customTimerMode === 'perQuestion' ? (
+                                                            <div className="flex items-center gap-2">
+                                                                <span className="text-[11px] text-gray-600">Mins per question:</span>
+                                                                <input
+                                                                    type="number"
+                                                                    step="0.1"
+                                                                    min="0.1"
+                                                                    value={customMinsPerQuestion}
+                                                                    onChange={(e) => setCustomMinsPerQuestion(e.target.value)}
+                                                                    className="w-16 border border-gray-300 rounded p-1 text-xs font-bold text-center outline-none focus:ring-1 focus:ring-blue-500"
+                                                                />
+                                                            </div>
+                                                        ) : (
+                                                            <div className="flex items-center gap-1 text-xs text-gray-700 font-mono">
+                                                                <span>H:</span>
+                                                                <input type="number" min="0" value={plainHours} onChange={(e) => setPlainHours(e.target.value)} className="w-10 border rounded p-1 text-center text-xs" />
+                                                                <span>M:</span>
+                                                                <input type="number" min="0" max="59" value={plainMinutes} onChange={(e) => setPlainMinutes(e.target.value)} className="w-10 border rounded p-1 text-center text-xs" />
+                                                                <span>S:</span>
+                                                                <input type="number" min="0" max="59" value={plainSeconds} onChange={(e) => setPlainSeconds(e.target.value)} className="w-10 border rounded p-1 text-center text-xs" />
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                )}
+                                            </div>
                                         )}
+
                                         <div className="md:col-span-3 lg:col-span-5">
                                             <label className="block text-xs font-bold text-gray-700 mb-1">Description</label>
                                             <input type="text" value={examDescription} onChange={(e) => setExamDescription(e.target.value)} placeholder="Brief details or instructions..." className="w-full border border-gray-300 rounded-md p-2 text-xs focus:ring-2 focus:ring-blue-500 outline-none" />
                                         </div>
                                     </div>
 
-                                    {examType === 'UAT' ? (
-                                        <div className="border-t pt-4">
-                                            {renderBlockGroup(uatEnglishBlocks, 'english')}
-                                            {renderBlockGroup(uatMathBlocks, 'math')}
-                                        </div>
-                                    ) : (
-                                        <div className="border-t pt-4">
-                                            {renderBlockGroup(examBlocks, 'default')}
-                                        </div>
-                                    )}
-                                </div>
+                                        {examType === 'UAT' ? (
+                                            <div className="border-t pt-4">
+                                                {renderBlockGroup(uatEnglishBlocks, 'english')}
+                                                {renderBlockGroup(uatMathBlocks, 'math')}
+                                            </div>
+                                        ) : (
+                                            <div className="border-t pt-4">
+                                                {renderBlockGroup(examBlocks, 'default')}
+                                            </div>
+                                        )}
+                                    </div>
 
-                                <div className="p-4 border-t bg-gray-50 flex justify-end gap-3">
-                                    <button onClick={() => setShowAddModal(false)} className="px-4 py-2 border rounded-md text-gray-700 text-sm font-medium hover:bg-gray-100">Cancel</button>
-                                    <button
-                                        onClick={handleSaveExamToFirestore}
-                                        disabled={isSavingExam}
-                                        className={`px-6 py-2 text-white text-sm font-bold rounded-md shadow transition-colors ${isSavingExam ? 'bg-gray-400 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700'}`}
-                                    >
-                                        {isSavingExam ? 'Saving Exam...' : 'Save & Publish Exam'}
-                                    </button>
+                                    <div className="p-4 border-t bg-gray-50 flex justify-end gap-3">
+                                        <button onClick={() => setShowAddModal(false)} className="px-4 py-2 border rounded-md text-gray-700 text-sm font-medium hover:bg-gray-100">Cancel</button>
+                                        <button
+                                            onClick={handleSaveExamToFirestore}
+                                            disabled={isSavingExam}
+                                            className={`px-6 py-2 text-white text-sm font-bold rounded-md shadow transition-colors ${isSavingExam ? 'bg-gray-400 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700'}`}
+                                        >
+                                            {isSavingExam ? 'Saving Exam...' : 'Save & Publish Exam'}
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
-                        </div>
                     )}
 
-                    {/* MODAL: EDIT EXISTING EXAM */}
-                    {editingExam && (
-                        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 p-4">
-                            <div className="bg-white rounded-xl shadow-2xl flex flex-col max-w-4xl w-full max-h-[90vh] overflow-hidden">
-                                <div className="p-5 border-b border-gray-200 flex justify-between items-center bg-gray-50">
-                                    <h3 className="text-xl font-bold text-gray-900">Edit Exam & Questions</h3>
-                                    <button onClick={() => setEditingExam(null)} className="text-gray-400 hover:text-gray-700">
-                                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-                                    </button>
-                                </div>
-
-                                <div className="p-6 overflow-y-auto space-y-6 flex-1">
-                                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                                        <div>
-                                            <label className="block text-sm font-semibold text-gray-700 mb-1">Title</label>
-                                            <input type="text" value={editingExam.title} onChange={(e) => setEditingExam({ ...editingExam, title: e.target.value })} className="w-full border border-gray-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
-                                        </div>
-                                        <div>
-                                            <label className="block text-sm font-semibold text-gray-700 mb-1">Exam Type</label>
-                                            <select
-                                                value={editingExam.type || 'default'}
-                                                onChange={(e) => {
-                                                    const val = e.target.value;
-                                                    setEditingExam({
-                                                        ...editingExam,
-                                                        type: val,
-                                                        subject: val === 'UAT' && !editingExam.subject ? 'UAT' : editingExam.subject
-                                                    });
-                                                }}
-                                                className="w-full border border-gray-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white"
-                                            >
-                                                <option value="default">Default</option>
-                                                <option value="UAT">UAT</option>
-                                            </select>
-                                        </div>
-                                        <div>
-                                            <label className="block text-sm font-semibold text-gray-700 mb-1">
-                                                Subject {editingExam.type === 'UAT' ? '(Auto: UAT)' : ''}
-                                            </label>
-                                            <input
-                                                type="text"
-                                                value={editingExam.type === 'UAT' ? (editingExam.subject || 'UAT') : editingExam.subject}
-                                                onChange={(e) => setEditingExam({ ...editingExam, subject: e.target.value })}
-                                                disabled={editingExam.type === 'UAT'}
-                                                className={`w-full border border-gray-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none ${editingExam.type === 'UAT' ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
-                                            />
-                                        </div>
-                                        <div>
-                                            <label className="block text-sm font-semibold text-gray-700 mb-1">Duration (Mins)</label>
-                                            <input type="number" value={editingExam.durationMinutes} onChange={(e) => setEditingExam({ ...editingExam, durationMinutes: e.target.value })} className="w-full border border-gray-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
-                                        </div>
-                                    </div>
-
-                                    <div>
-                                        <label className="block text-sm font-semibold text-gray-700 mb-1">Description</label>
-                                        <textarea value={editingExam.description || ''} onChange={(e) => setEditingExam({ ...editingExam, description: e.target.value })} rows="2" className="w-full border border-gray-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none"></textarea>
-                                    </div>
-
-                                    <div className="border-t pt-4">
-                                        <div className="flex justify-between items-center mb-4">
-                                            <h4 className="font-bold text-gray-900 text-base">Questions ({editQuestions.length})</h4>
-                                            <button onClick={handleAddQuestionToEdit} className="px-3 py-1 bg-green-600 hover:bg-green-700 text-white text-xs font-bold rounded flex items-center gap-1">
-                                                + Add Question
+                            {/* MODAL: EDIT EXISTING EXAM */}
+                            {editingExam && (
+                                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 p-4">
+                                    <div className="bg-white rounded-xl shadow-2xl flex flex-col max-w-4xl w-full max-h-[90vh] overflow-hidden">
+                                        <div className="p-5 border-b border-gray-200 flex justify-between items-center bg-gray-50">
+                                            <h3 className="text-xl font-bold text-gray-900">Edit Exam & Questions</h3>
+                                            <button onClick={() => setEditingExam(null)} className="text-gray-400 hover:text-gray-700">
+                                                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                                             </button>
                                         </div>
 
-                                        <div className="space-y-6 max-h-[40vh] overflow-y-auto pr-2">
-                                            {editQuestions.map((q, qIdx) => (
-                                                <div key={qIdx} className="p-4 border rounded-lg bg-gray-50 space-y-3 relative">
-                                                    <div className="flex justify-between items-center">
-                                                        <span className="font-bold text-gray-800 text-sm">Question {qIdx + 1}</span>
-                                                        <button onClick={() => handleDeleteQuestionFromEdit(qIdx)} className="text-red-500 hover:text-red-700 text-xs font-semibold">
-                                                            Delete Question
-                                                        </button>
-                                                    </div>
+                                        <div className="p-6 overflow-y-auto space-y-6 flex-1">
+                                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                                                <div>
+                                                    <label className="block text-sm font-semibold text-gray-700 mb-1">Title</label>
+                                                    <input type="text" value={editingExam.title} onChange={(e) => setEditingExam({ ...editingExam, title: e.target.value })} className="w-full border border-gray-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
+                                                </div>
+                                                <div>
+                                                    <label className="block text-sm font-semibold text-gray-700 mb-1">Exam Type</label>
+                                                    <select
+                                                        value={editingExam.type || 'default'}
+                                                        onChange={(e) => {
+                                                            const val = e.target.value;
+                                                            setEditingExam({
+                                                                ...editingExam,
+                                                                type: val,
+                                                                subject: val === 'UAT' && !editingExam.subject ? 'UAT' : editingExam.subject
+                                                            });
+                                                        }}
+                                                        className="w-full border border-gray-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white"
+                                                    >
+                                                        <option value="default">Default</option>
+                                                        <option value="UAT">UAT</option>
+                                                    </select>
+                                                </div>
+                                                <div>
+                                                    <label className="block text-sm font-semibold text-gray-700 mb-1">
+                                                        Subject {editingExam.type === 'UAT' ? '(Auto: UAT)' : ''}
+                                                    </label>
+                                                    <input
+                                                        type="text"
+                                                        value={editingExam.type === 'UAT' ? (editingExam.subject || 'UAT') : editingExam.subject}
+                                                        onChange={(e) => setEditingExam({ ...editingExam, subject: e.target.value })}
+                                                        disabled={editingExam.type === 'UAT'}
+                                                        className={`w-full border border-gray-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none ${editingExam.type === 'UAT' ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
+                                                    />
+                                                </div>
+                                                <div>
+                                                    <label className="block text-sm font-semibold text-gray-700 mb-1">Duration (Mins)</label>
+                                                    <input type="number" value={editingExam.durationMinutes} onChange={(e) => setEditingExam({ ...editingExam, durationMinutes: e.target.value })} className="w-full border border-gray-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
+                                                </div>
+                                            </div>
 
-                                                    <div className="p-3 bg-blue-50/50 border border-blue-200 rounded-md space-y-2">
-                                                        <div className="flex items-center justify-between gap-2">
-                                                            <span className="text-xs font-bold text-blue-900">Extendable Reading Passage / Table</span>
-                                                            <label className="flex items-center gap-1.5 text-xs text-gray-700 cursor-pointer">
-                                                                <input
-                                                                    type="checkbox"
-                                                                    checked={q.isHTML || false}
-                                                                    onChange={(e) => handleUpdateQuestionField(qIdx, 'isHTML', e.target.checked)}
-                                                                    className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                                                                />
-                                                                <span>Render as HTML / Table</span>
-                                                            </label>
-                                                        </div>
-                                                        <input
-                                                            type="text"
-                                                            value={q.passageTitle || ''}
-                                                            onChange={(e) => handleUpdateQuestionField(qIdx, 'passageTitle', e.target.value)}
-                                                            placeholder="Passage Title (e.g., Passage 1, Cloze Test, Table 1)"
-                                                            className="w-full border border-gray-300 rounded p-1.5 text-xs bg-white focus:ring-1 focus:ring-blue-500 outline-none"
-                                                        />
-                                                        <textarea
-                                                            value={q.passage || ''}
-                                                            onChange={(e) => handleUpdateQuestionField(qIdx, 'passage', e.target.value)}
-                                                            rows="3"
-                                                            placeholder="Paste Passage text or HTML table code here..."
-                                                            className="w-full border border-gray-300 rounded p-1.5 text-xs bg-white font-mono focus:ring-1 focus:ring-blue-500 outline-none"
-                                                        ></textarea>
-                                                    </div>
+                                            <div>
+                                                <label className="block text-sm font-semibold text-gray-700 mb-1">Description</label>
+                                                <textarea value={editingExam.description || ''} onChange={(e) => setEditingExam({ ...editingExam, description: e.target.value })} rows="2" className="w-full border border-gray-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none"></textarea>
+                                            </div>
 
-                                                    <textarea
-                                                        value={q.text}
-                                                        onChange={(e) => handleUpdateQuestionField(qIdx, 'text', e.target.value)}
-                                                        rows="2"
-                                                        className="w-full border border-gray-300 rounded p-2 text-xs focus:ring-1 focus:ring-blue-500 outline-none"
-                                                        placeholder="Question Stem Text..."
-                                                    ></textarea>
+                                            <div className="border-t pt-4">
+                                                <div className="flex justify-between items-center mb-4">
+                                                    <h4 className="font-bold text-gray-900 text-base">Questions ({editQuestions.length})</h4>
+                                                    <button onClick={handleAddQuestionToEdit} className="px-3 py-1 bg-green-600 hover:bg-green-700 text-white text-xs font-bold rounded flex items-center gap-1">
+                                                        + Add Question
+                                                    </button>
+                                                </div>
 
-                                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                                                        {q.options.map((opt, optIdx) => (
-                                                            <div key={opt.id} className="flex items-center gap-2 bg-white p-1.5 border rounded">
-                                                                <span className="font-bold text-xs text-gray-600 w-4">{opt.id}.</span>
+                                                <div className="space-y-6 max-h-[40vh] overflow-y-auto pr-2">
+                                                    {editQuestions.map((q, qIdx) => (
+                                                        <div key={qIdx} className="p-4 border rounded-lg bg-gray-50 space-y-3 relative">
+                                                            <div className="flex justify-between items-center">
+                                                                <span className="font-bold text-gray-800 text-sm">Question {qIdx + 1}</span>
+                                                                <button onClick={() => handleDeleteQuestionFromEdit(qIdx)} className="text-red-500 hover:text-red-700 text-xs font-semibold">
+                                                                    Delete Question
+                                                                </button>
+                                                            </div>
+
+                                                            <div className="p-3 bg-blue-50/50 border border-blue-200 rounded-md space-y-2">
+                                                                <div className="flex items-center justify-between gap-2">
+                                                                    <span className="text-xs font-bold text-blue-900">Extendable Reading Passage / Table</span>
+                                                                    <label className="flex items-center gap-1.5 text-xs text-gray-700 cursor-pointer">
+                                                                        <input
+                                                                            type="checkbox"
+                                                                            checked={q.isHTML || false}
+                                                                            onChange={(e) => handleUpdateQuestionField(qIdx, 'isHTML', e.target.checked)}
+                                                                            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                                                        />
+                                                                        <span>Render as HTML / Table</span>
+                                                                    </label>
+                                                                </div>
                                                                 <input
                                                                     type="text"
-                                                                    value={opt.text}
-                                                                    onChange={(e) => handleUpdateOptionText(qIdx, optIdx, e.target.value)}
-                                                                    className="w-full text-xs border-none outline-none"
+                                                                    value={q.passageTitle || ''}
+                                                                    onChange={(e) => handleUpdateQuestionField(qIdx, 'passageTitle', e.target.value)}
+                                                                    placeholder="Passage Title (e.g., Passage 1, Cloze Test, Table 1)"
+                                                                    className="w-full border border-gray-300 rounded p-1.5 text-xs bg-white focus:ring-1 focus:ring-blue-500 outline-none"
                                                                 />
+                                                                <textarea
+                                                                    value={q.passage || ''}
+                                                                    onChange={(e) => handleUpdateQuestionField(qIdx, 'passage', e.target.value)}
+                                                                    rows="3"
+                                                                    placeholder="Paste Passage text or HTML table code here..."
+                                                                    className="w-full border border-gray-300 rounded p-1.5 text-xs bg-white font-mono focus:ring-1 focus:ring-blue-500 outline-none"
+                                                                ></textarea>
                                                             </div>
-                                                        ))}
-                                                    </div>
 
-                                                    <div className="flex items-center gap-3 pt-1">
-                                                        <label className="text-xs font-semibold text-gray-700">Correct Answer:</label>
-                                                        <select
-                                                            value={q.correctAnswer}
-                                                            onChange={(e) => handleUpdateQuestionField(qIdx, 'correctAnswer', e.target.value)}
-                                                            className="border rounded px-2 py-1 text-xs bg-white focus:ring-1 focus:ring-blue-500 outline-none"
-                                                        >
-                                                            {q.options.map(o => <option key={o.id} value={o.id}>{o.id}</option>)}
-                                                        </select>
-                                                    </div>
+                                                            <textarea
+                                                                value={q.text}
+                                                                onChange={(e) => handleUpdateQuestionField(qIdx, 'text', e.target.value)}
+                                                                rows="2"
+                                                                className="w-full border border-gray-300 rounded p-2 text-xs focus:ring-1 focus:ring-blue-500 outline-none"
+                                                                placeholder="Question Stem Text..."
+                                                            ></textarea>
 
-                                                    <div>
-                                                        <label className="block text-xs font-semibold text-gray-700 mb-1">Explanation:</label>
-                                                        <textarea
-                                                            value={q.explanation || ''}
-                                                            onChange={(e) => handleUpdateQuestionField(qIdx, 'explanation', e.target.value)}
-                                                            rows="2"
-                                                            className="w-full border border-gray-300 rounded p-2 text-xs focus:ring-1 focus:ring-blue-500 outline-none"
-                                                            placeholder="Explanation for the correct answer..."
-                                                        ></textarea>
-                                                    </div>
+                                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                                                {q.options.map((opt, optIdx) => (
+                                                                    <div key={opt.id} className="flex items-center gap-2 bg-white p-1.5 border rounded">
+                                                                        <span className="font-bold text-xs text-gray-600 w-4">{opt.id}.</span>
+                                                                        <input
+                                                                            type="text"
+                                                                            value={opt.text}
+                                                                            onChange={(e) => handleUpdateOptionText(qIdx, optIdx, e.target.value)}
+                                                                            className="w-full text-xs border-none outline-none"
+                                                                        />
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+
+                                                            <div className="flex items-center gap-3 pt-1">
+                                                                <label className="text-xs font-semibold text-gray-700">Correct Answer:</label>
+                                                                <select
+                                                                    value={q.correctAnswer}
+                                                                    onChange={(e) => handleUpdateQuestionField(qIdx, 'correctAnswer', e.target.value)}
+                                                                    className="border rounded px-2 py-1 text-xs bg-white focus:ring-1 focus:ring-blue-500 outline-none"
+                                                                >
+                                                                    {q.options.map(o => <option key={o.id} value={o.id}>{o.id}</option>)}
+                                                                </select>
+                                                            </div>
+
+                                                            <div>
+                                                                <label className="block text-xs font-semibold text-gray-700 mb-1">Explanation:</label>
+                                                                <textarea
+                                                                    value={q.explanation || ''}
+                                                                    onChange={(e) => handleUpdateQuestionField(qIdx, 'explanation', e.target.value)}
+                                                                    rows="2"
+                                                                    className="w-full border border-gray-300 rounded p-2 text-xs focus:ring-1 focus:ring-blue-500 outline-none"
+                                                                    placeholder="Explanation for the correct answer..."
+                                                                ></textarea>
+                                                            </div>
+                                                        </div>
+                                                    ))}
                                                 </div>
-                                            ))}
+                                            </div>
+                                        </div>
+
+                                        <div className="p-4 border-t bg-gray-50 flex justify-end gap-3">
+                                            <button onClick={() => setEditingExam(null)} className="px-4 py-2 border rounded-md text-gray-700 text-sm font-medium hover:bg-gray-100">Cancel</button>
+                                            <button
+                                                onClick={handleSaveEditedExam}
+                                                disabled={isUpdatingExam}
+                                                className={`px-5 py-2 text-white text-sm font-bold rounded-md shadow transition-colors ${isUpdatingExam ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'}`}
+                                            >
+                                                {isUpdatingExam ? 'Saving...' : 'Save Changes'}
+                                            </button>
                                         </div>
                                     </div>
                                 </div>
+                            )}
 
-                                <div className="p-4 border-t bg-gray-50 flex justify-end gap-3">
-                                    <button onClick={() => setEditingExam(null)} className="px-4 py-2 border rounded-md text-gray-700 text-sm font-medium hover:bg-gray-100">Cancel</button>
-                                    <button
-                                        onClick={handleSaveEditedExam}
-                                        disabled={isUpdatingExam}
-                                        className={`px-5 py-2 text-white text-sm font-bold rounded-md shadow transition-colors ${isUpdatingExam ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'}`}
-                                    >
-                                        {isUpdatingExam ? 'Saving...' : 'Save Changes'}
-                                    </button>
+                            {/* MODAL: DELETE CONFIRMATION */}
+                            {examToDelete && (
+                                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4">
+                                    <div className="bg-white rounded-lg shadow-xl p-6 max-w-md w-full">
+                                        <h3 className="text-lg font-bold text-gray-900 mb-2">Delete Entire Exam Set?</h3>
+                                        <p className="text-sm text-gray-600 mb-6">
+                                            Are you sure you want to delete <span className="font-bold text-gray-900">"{examToDelete.title}"</span>? This action cannot be undone.
+                                        </p>
+                                        <div className="flex justify-end gap-3">
+                                            <button onClick={() => setExamToDelete(null)} className="px-4 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-md text-sm font-medium">Cancel</button>
+                                            <button
+                                                onClick={handleConfirmDelete}
+                                                disabled={isDeleting}
+                                                className="px-4 py-2 text-white bg-red-600 hover:bg-red-700 rounded-md text-sm font-medium"
+                                            >
+                                                {isDeleting ? 'Deleting...' : 'Delete Exam'}
+                                            </button>
+                                        </div>
+                                    </div>
                                 </div>
-                            </div>
+                            )}
                         </div>
-                    )}
-
-                    {/* MODAL: DELETE CONFIRMATION */}
-                    {examToDelete && (
-                        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4">
-                            <div className="bg-white rounded-lg shadow-xl p-6 max-w-md w-full">
-                                <h3 className="text-lg font-bold text-gray-900 mb-2">Delete Entire Exam Set?</h3>
-                                <p className="text-sm text-gray-600 mb-6">
-                                    Are you sure you want to delete <span className="font-bold text-gray-900">"{examToDelete.title}"</span>? This action cannot be undone.
-                                </p>
-                                <div className="flex justify-end gap-3">
-                                    <button onClick={() => setExamToDelete(null)} className="px-4 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-md text-sm font-medium">Cancel</button>
-                                    <button
-                                        onClick={handleConfirmDelete}
-                                        disabled={isDeleting}
-                                        className="px-4 py-2 text-white bg-red-600 hover:bg-red-700 rounded-md text-sm font-medium"
-                                    >
-                                        {isDeleting ? 'Deleting...' : 'Delete Exam'}
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                    )}
-                </div>
             </div>
-        );
+                );
     }
 
-    const isSubmitted = currentView === 'results';
-    const question = activeExam.questions[currentIndex] || activeExam.questions[0];
+                const isSubmitted = currentView === 'results';
+                const question = activeExam.questions[currentIndex] || activeExam.questions[0];
 
     const renderQuestionButton = (q, idx) => {
         const isAnswered = !!answers[q.id];
-        const isFlagged = !!flagged[q.id];
-        const isActive = currentIndex === idx;
-        let bgClass = "bg-white text-gray-600 border-gray-300 hover:bg-gray-50";
+                const isFlagged = !!flagged[q.id];
+                const isActive = currentIndex === idx;
+                let bgClass = "bg-white text-gray-600 border-gray-300 hover:bg-gray-50";
 
-        if (isSubmitted) {
+                if (isSubmitted) {
             if (!answers[q.id]) bgClass = "bg-gray-100 text-gray-500 border-gray-300";
-            else if (answers[q.id] === q.correctAnswer) bgClass = "bg-green-100 text-green-800 border-green-400";
-            else bgClass = "bg-red-100 text-red-800 border-red-400";
+                else if (answers[q.id] === q.correctAnswer) bgClass = "bg-green-100 text-green-800 border-green-400";
+                else bgClass = "bg-red-100 text-red-800 border-red-400";
         } else if (isAnswered) bgClass = "bg-blue-100 text-blue-800 border-blue-300";
 
-        return (
-            <button onClick={() => setCurrentIndex(idx)} key={q.id} className={`relative flex items-center justify-center py-2 px-1 text-xs sm:text-sm font-medium rounded border transition-colors ${bgClass} ${isActive ? 'ring-2 ring-blue-500 ring-offset-1' : ''}`}>
-                {idx + 1}
-                {isFlagged && <div className="absolute top-0 right-0 w-0 h-0 border-t-[10px] border-l-[10px] border-t-red-500 border-l-transparent rounded-tr-[3px]"></div>}
-            </button>
-        );
+                return (
+                <button onClick={() => setCurrentIndex(idx)} key={q.id} className={`relative flex items-center justify-center py-2 px-1 text-xs sm:text-sm font-medium rounded border transition-colors ${bgClass} ${isActive ? 'ring-2 ring-blue-500 ring-offset-1' : ''}`}>
+                    {idx + 1}
+                    {isFlagged && <div className="absolute top-0 right-0 w-0 h-0 border-t-[10px] border-l-[10px] border-t-red-500 border-l-transparent rounded-tr-[3px]"></div>}
+                </button>
+                );
     };
 
-    let englishScore = 0;
-    let mathScore = 0;
-    if (isSubmitted && activeExam.type === 'UAT') {
-        activeExam.questions.forEach((q, idx) => {
-            if (answers[q.id] === q.correctAnswer) {
-                if (idx < 55) englishScore++;
-                else mathScore++;
-            }
-        });
+                let englishScore = 0;
+                let mathScore = 0;
+                if (isSubmitted && activeExam.type === 'UAT') {
+                    activeExam.questions.forEach((q, idx) => {
+                        if (answers[q.id] === q.correctAnswer) {
+                            if (idx < 55) englishScore++;
+                            else mathScore++;
+                        }
+                    });
     }
 
-    let isPrevDisabled = false;
-    let isNextDisabled = false;
-    if (activeExam?.type === 'UAT' && !isSubmitted) {
+                let isPrevDisabled = false;
+                let isNextDisabled = false;
+                if (activeExam?.type === 'UAT' && !isSubmitted) {
         if (uatSection === 'english') {
-            isPrevDisabled = currentIndex === 0;
-            isNextDisabled = currentIndex === 54;
+                    isPrevDisabled = currentIndex === 0;
+                isNextDisabled = currentIndex === 54;
         } else if (uatSection === 'math') {
-            isPrevDisabled = currentIndex === 55;
-            isNextDisabled = currentIndex === activeExam.questions.length - 1;
+                    isPrevDisabled = currentIndex === 55;
+                isNextDisabled = currentIndex === activeExam.questions.length - 1;
         }
     } else {
-        isPrevDisabled = currentIndex === 0;
-        isNextDisabled = currentIndex === activeExam.questions.length - 1;
+                    isPrevDisabled = currentIndex === 0;
+                isNextDisabled = currentIndex === activeExam.questions.length - 1;
     }
 
-    const finalScorePct = activeExam?.questions?.length ? Math.round((score / activeExam.questions.length) * 100) : 0;
+                const finalScorePct = activeExam?.questions?.length ? Math.round((score / activeExam.questions.length) * 100) : 0;
 
     const scoreColorClass = finalScorePct === 100 ? "text-yellow-500" : finalScorePct >= 95 ? "text-emerald-600" : finalScorePct >= 90 ? "text-amber-500" : "text-rose-600";
 
-    const displayScoreText = finalScorePct === 100 ? (
-        <span><span className="animate-crown">👑</span> 100%</span>
-    ) : `${finalScorePct}%`;
+                const displayScoreText = finalScorePct === 100 ? (
+                <span><span className="animate-crown">👑</span> 100%</span>
+                ) : `${finalScorePct}%`;
 
-    // The return statement and main container were missing here!
-    return (
-        <div className="min-h-screen py-4 px-4 sm:px-6 lg:px-8 relative pb-20">
+                // The return statement and main container were missing here!
+                return (
+                <div className="min-h-screen py-4 px-4 sm:px-6 lg:px-8 relative pb-20">
 
-            {/* The celebration overlay */}
-            {isSubmitted && finalScorePct === 100 && (
-                <div className="fixed inset-0 pointer-events-none z-50 animate-cyan-bg"></div>
-            )}
+                    {/* The celebration overlay */}
+                    {isSubmitted && finalScorePct === 100 && (
+                        <div className="fixed inset-0 pointer-events-none z-50 animate-cyan-bg"></div>
+                    )}
 
-            {showResetModal && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 transition-opacity">
-                    <div className="bg-white rounded-lg shadow-xl p-6 max-w-sm w-full mx-4">
-                        <h3 className="text-lg font-bold text-gray-900 mb-2">Retake Exam?</h3>
-                        <p className="text-gray-600 mb-6">Are you sure you want to retake the entire exam? All progress will be lost.</p>
-                        <div className="flex justify-end gap-3">
-                            <button onClick={() => setShowResetModal(false)} className="px-4 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-md font-medium">Cancel</button>
-                            <button onClick={handleReset} className="px-4 py-2 text-white bg-blue-600 hover:bg-blue-700 rounded-md font-medium">Yes, Retake</button>
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {showExitConfirmModal && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 transition-opacity">
-                    <div className="bg-white rounded-lg shadow-xl p-6 max-w-sm w-full mx-4">
-                        <h3 className="text-lg font-bold text-gray-900 mb-2">Submit & Exit?</h3>
-                        <p className="text-gray-600 text-sm mb-6">Returning to the dashboard will submit your exam right away and record your score. Are you sure?</p>
-                        <div className="flex justify-end gap-3">
-                            <button onClick={() => setShowExitConfirmModal(false)} className="px-4 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-md text-sm font-medium">Cancel</button>
-                            <button onClick={handleConfirmExitAndSubmit} className="px-4 py-2 text-white bg-red-600 hover:bg-red-700 rounded-md text-sm font-medium">Yes, Submit & Exit</button>
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {showExportModal && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 transition-opacity p-4">
-                    <div className="bg-white rounded-lg shadow-2xl flex flex-col max-w-3xl w-full max-h-[90vh]">
-                        <div className="p-5 border-b border-gray-200 flex justify-between items-center bg-gray-50 rounded-t-lg">
-                            <h3 className="text-xl font-bold text-gray-900 flex items-center gap-2">Export for AI Agent</h3>
-                            <button onClick={() => setShowExportModal(false)} className="text-gray-400 hover:text-gray-700"><svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg></button>
-                        </div>
-                        <div className="p-5 overflow-y-auto flex-1 bg-white">
-                            <div className="space-y-3">
-                                {activeExam.questions.map(q => {
-                                    const isSelected = exportSelectedIds.has(q.id);
-                                    const isWrong = answers[q.id] !== q.correctAnswer;
-                                    const isFlagged = flagged[q.id];
-                                    return (
-                                        <label key={q.id} className={`flex items-start gap-4 p-4 border rounded-lg cursor-pointer transition-colors ${isSelected ? 'bg-blue-50 border-blue-300' : 'hover:bg-gray-50 border-gray-200'}`}>
-                                            <input type="checkbox" checked={isSelected} onChange={() => toggleExportSelection(q.id)} className="w-5 h-5 mt-0.5 text-blue-600 rounded border-gray-300" />
-                                            <div className="flex-1">
-                                                <div className="flex items-center gap-2 mb-1 flex-wrap">
-                                                    <span className="font-bold text-gray-900">Question {q.id}</span>
-                                                    {isWrong && <span className="text-xs bg-red-100 text-red-800 px-2 py-0.5 rounded-full">Incorrect</span>}
-                                                    {isFlagged && <span className="text-xs bg-yellow-100 text-yellow-800 px-2 py-0.5 rounded-full">Flagged</span>}
-                                                </div>
-                                                <div className="text-sm text-gray-700 line-clamp-2"><MathText text={q.text} /></div>
-                                            </div>
-                                        </label>
-                                    )
-                                })}
+                    {showResetModal && (
+                        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 transition-opacity">
+                            <div className="bg-white rounded-lg shadow-xl p-6 max-w-sm w-full mx-4">
+                                <h3 className="text-lg font-bold text-gray-900 mb-2">Retake Exam?</h3>
+                                <p className="text-gray-600 mb-6">Are you sure you want to retake the entire exam? All progress will be lost.</p>
+                                <div className="flex justify-end gap-3">
+                                    <button onClick={() => setShowResetModal(false)} className="px-4 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-md font-medium">Cancel</button>
+                                    <button onClick={handleReset} className="px-4 py-2 text-white bg-blue-600 hover:bg-blue-700 rounded-md font-medium">Yes, Retake</button>
+                                </div>
                             </div>
-                        </div>
-                        <div className="p-5 border-t border-gray-200 bg-gray-50 flex justify-between items-center rounded-b-lg">
-                            <span className="text-sm font-medium text-gray-600">Selected: {exportSelectedIds.size}</span>
-                            <div className="flex gap-3">
-                                <button onClick={handleCopyForAI} className={`px-5 py-2.5 text-white rounded-lg font-medium flex items-center gap-2 ${copySuccess ? 'bg-green-600' : 'bg-purple-600 hover:bg-purple-700'}`}>
-                                    {copySuccess ? 'Copied!' : 'Copy to Clipboard'}
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            <div className="max-w-7xl mx-auto">
-                <div className="mb-4">
-                    <button onClick={handleBackToDashboardClick} className="text-sm font-medium text-gray-500 hover:text-gray-900 flex items-center gap-1 transition-colors">
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path></svg>
-                        Back to Dashboard
-                    </button>
-                </div>
-
-                <div className="fixed bottom-6 right-6 sm:top-6 sm:right-8 sm:bottom-auto z-40 flex-shrink-0">
-                    {isTimerHidden ? (
-                        <button onClick={() => setIsTimerHidden(false)} className="flex items-center justify-center w-10 h-10 bg-white text-gray-400 rounded-full shadow-md border border-gray-200">
-                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-                        </button>
-                    ) : (
-                        <div className="bg-white rounded-full border border-gray-200 shadow-md py-1.5 px-3 flex items-center gap-3">
-                            <button onClick={() => setIsTimerHidden(true)} className="text-gray-400 hover:text-gray-700"><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg></button>
-                            {timerStatus === 'idle' && !isSubmitted ? (
-                                <div className="flex items-center text-sm font-mono text-gray-700 font-medium">
-                                    <select value={inputHours} onChange={(e) => setInputHours(Number(e.target.value))} className="appearance-none bg-transparent outline-none cursor-pointer text-center w-6 hover:text-blue-600 transition-colors">
-                                        {[...Array(13).keys()].map(h => <option key={h} value={h}>{String(h).padStart(2, '0')}</option>)}
-                                    </select><span>:</span>
-                                    <select value={inputMinutes} onChange={(e) => setInputMinutes(Number(e.target.value))} className="appearance-none bg-transparent outline-none cursor-pointer text-center w-6 hover:text-blue-600 transition-colors">
-                                        {[...Array(60).keys()].map(m => <option key={m} value={m}>{String(m).padStart(2, '0')}</option>)}
-                                    </select><span>:</span>
-                                    <select value={inputSeconds} onChange={(e) => setInputSeconds(Number(e.target.value))} className="appearance-none bg-transparent outline-none cursor-pointer text-center w-6 hover:text-blue-600 transition-colors">
-                                        {[...Array(60).keys()].map(s => <option key={s} value={s}>{String(s).padStart(2, '0')}</option>)}
-                                    </select>
-                                </div>
-                            ) : (
-                                <div className={`font-mono font-bold text-base tracking-wider ${timeLeft <= 300 && timerStatus === 'running' ? 'text-red-600 animate-pulse' : 'text-gray-800'}`}>
-                                    {formatTime(timeLeft)}
-                                </div>
-                            )}
-                            {!isSubmitted && (
-                                <div className="flex items-center pl-1 border-l border-gray-200">
-                                    {timerStatus === 'idle' && (
-                                        <button onClick={startTimer} className="p-1 ml-1 rounded-full text-green-600 hover:bg-green-50"><svg className="w-5 h-5 fill-current" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" /></svg></button>
-                                    )}
-                                    {timerStatus === 'running' && (
-                                        <button onClick={() => setTimerStatus('paused')} className="p-1 ml-1 rounded-full text-amber-500 hover:bg-amber-50">
-                                            <svg className="w-5 h-5 fill-current" viewBox="0 0 24 24">
-                                                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z" />
-                                            </svg>
-                                        </button>
-                                    )}
-                                    {timerStatus === 'paused' && (
-                                        <button onClick={() => setTimerStatus('running')} className="p-1 ml-1 rounded-full text-blue-500 hover:bg-blue-50"><svg className="w-5 h-5 fill-current" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" /></svg></button>
-                                    )}
-                                </div>
-                            )}
                         </div>
                     )}
-                </div>
 
-                <header className="mb-6 text-center mt-2 border-b border-gray-200 pb-4">
-                    <h1 className="text-3xl sm:text-4xl font-bold text-[#111827] mb-2">{activeExam.title}</h1>
-                    <span className="px-3 py-1 bg-gray-100 text-gray-600 rounded-full text-sm font-medium">{activeExam.subject}</span>
-                </header>
-                <div className="flex flex-col lg:flex-row gap-6 relative">
-                    <aside className="w-full lg:w-72 shrink-0 lg:sticky lg:top-6 h-fit bg-white rounded-lg border border-gray-200 shadow-sm p-4 order-2 lg:order-1">
-                        <h3 className="text-lg font-bold text-gray-900 mb-3 border-b pb-2">Questions</h3>
-                        <div className="pr-2 pb-2 max-h-[300px] lg:max-h-[50vh] overflow-y-auto">
-                            {activeExam.type === 'UAT' ? (
-                                <>
-                                    {(isSubmitted || uatSection === 'english') && (
-                                        <>
-                                            <div className="text-xs font-bold text-gray-500 mb-2 uppercase tracking-wide">English (1-55)</div>
-                                            <div className="grid grid-cols-5 sm:grid-cols-8 md:grid-cols-10 lg:grid-cols-5 gap-2 mb-4">
-                                                {activeExam.questions.slice(0, 55).map((q, idx) => renderQuestionButton(q, idx))}
-                                            </div>
-                                        </>
-                                    )}
-                                    {(isSubmitted || uatSection === 'math') && activeExam.questions.length > 55 && (
-                                        <>
-                                            <div className="text-xs font-bold text-gray-500 mb-2 uppercase tracking-wide border-t border-gray-100 pt-3">Mathematics (56+)</div>
-                                            <div className="grid grid-cols-5 sm:grid-cols-8 md:grid-cols-10 lg:grid-cols-5 gap-2 mb-2">
-                                                {activeExam.questions.slice(55).map((q, idx) => renderQuestionButton(q, idx + 55))}
-                                            </div>
-                                        </>
-                                    )}
-                                </>
+                    {showExitConfirmModal && (
+                        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 transition-opacity">
+                            <div className="bg-white rounded-lg shadow-xl p-6 max-w-sm w-full mx-4">
+                                <h3 className="text-lg font-bold text-gray-900 mb-2">Submit & Exit?</h3>
+                                <p className="text-gray-600 text-sm mb-6">Returning to the dashboard will submit your exam right away and record your score. Are you sure?</p>
+                                <div className="flex justify-end gap-3">
+                                    <button onClick={() => setShowExitConfirmModal(false)} className="px-4 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-md text-sm font-medium">Cancel</button>
+                                    <button onClick={handleConfirmExitAndSubmit} className="px-4 py-2 text-white bg-red-600 hover:bg-red-700 rounded-md text-sm font-medium">Yes, Submit & Exit</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {showExportModal && (
+                        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 transition-opacity p-4">
+                            <div className="bg-white rounded-lg shadow-2xl flex flex-col max-w-3xl w-full max-h-[90vh]">
+                                <div className="p-5 border-b border-gray-200 flex justify-between items-center bg-gray-50 rounded-t-lg">
+                                    <h3 className="text-xl font-bold text-gray-900 flex items-center gap-2">Export for AI Agent</h3>
+                                    <button onClick={() => setShowExportModal(false)} className="text-gray-400 hover:text-gray-700"><svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg></button>
+                                </div>
+                                <div className="p-5 overflow-y-auto flex-1 bg-white">
+                                    <div className="space-y-3">
+                                        {activeExam.questions.map(q => {
+                                            const isSelected = exportSelectedIds.has(q.id);
+                                            const isWrong = answers[q.id] !== q.correctAnswer;
+                                            const isFlagged = flagged[q.id];
+                                            return (
+                                                <label key={q.id} className={`flex items-start gap-4 p-4 border rounded-lg cursor-pointer transition-colors ${isSelected ? 'bg-blue-50 border-blue-300' : 'hover:bg-gray-50 border-gray-200'}`}>
+                                                    <input type="checkbox" checked={isSelected} onChange={() => toggleExportSelection(q.id)} className="w-5 h-5 mt-0.5 text-blue-600 rounded border-gray-300" />
+                                                    <div className="flex-1">
+                                                        <div className="flex items-center gap-2 mb-1 flex-wrap">
+                                                            <span className="font-bold text-gray-900">Question {q.id}</span>
+                                                            {isWrong && <span className="text-xs bg-red-100 text-red-800 px-2 py-0.5 rounded-full">Incorrect</span>}
+                                                            {isFlagged && <span className="text-xs bg-yellow-100 text-yellow-800 px-2 py-0.5 rounded-full">Flagged</span>}
+                                                        </div>
+                                                        <div className="text-sm text-gray-700 line-clamp-2"><MathText text={q.text} /></div>
+                                                    </div>
+                                                </label>
+                                            )
+                                        })}
+                                    </div>
+                                </div>
+                                <div className="p-5 border-t border-gray-200 bg-gray-50 flex justify-between items-center rounded-b-lg">
+                                    <span className="text-sm font-medium text-gray-600">Selected: {exportSelectedIds.size}</span>
+                                    <div className="flex gap-3">
+                                        <button onClick={handleCopyForAI} className={`px-5 py-2.5 text-white rounded-lg font-medium flex items-center gap-2 ${copySuccess ? 'bg-green-600' : 'bg-purple-600 hover:bg-purple-700'}`}>
+                                            {copySuccess ? 'Copied!' : 'Copy to Clipboard'}
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    <div className="max-w-7xl mx-auto">
+                        <div className="mb-4">
+                            <button onClick={handleBackToDashboardClick} className="text-sm font-medium text-gray-500 hover:text-gray-900 flex items-center gap-1 transition-colors">
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path></svg>
+                                Back to Dashboard
+                            </button>
+                        </div>
+
+                        <div className="fixed bottom-6 right-6 sm:top-6 sm:right-8 sm:bottom-auto z-40 flex-shrink-0">
+                            {isTimerHidden ? (
+                                <button onClick={() => setIsTimerHidden(false)} className="flex items-center justify-center w-10 h-10 bg-white text-gray-400 rounded-full shadow-md border border-gray-200">
+                                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                                </button>
                             ) : (
-                                <div className="grid grid-cols-5 sm:grid-cols-8 md:grid-cols-10 lg:grid-cols-5 gap-2 mb-2">
-                                    {activeExam.questions.map((q, idx) => renderQuestionButton(q, idx))}
+                                <div className="bg-white rounded-full border border-gray-200 shadow-md py-1.5 px-3 flex items-center gap-3">
+                                    <button onClick={() => setIsTimerHidden(true)} className="text-gray-400 hover:text-gray-700"><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg></button>
+                                    {timerStatus === 'idle' && !isSubmitted ? (
+                                        <div className="flex items-center text-sm font-mono text-gray-700 font-medium">
+                                            <select value={inputHours} onChange={(e) => setInputHours(Number(e.target.value))} className="appearance-none bg-transparent outline-none cursor-pointer text-center w-6 hover:text-blue-600 transition-colors">
+                                                {[...Array(13).keys()].map(h => <option key={h} value={h}>{String(h).padStart(2, '0')}</option>)}
+                                            </select><span>:</span>
+                                            <select value={inputMinutes} onChange={(e) => setInputMinutes(Number(e.target.value))} className="appearance-none bg-transparent outline-none cursor-pointer text-center w-6 hover:text-blue-600 transition-colors">
+                                                {[...Array(60).keys()].map(m => <option key={m} value={m}>{String(m).padStart(2, '0')}</option>)}
+                                            </select><span>:</span>
+                                            <select value={inputSeconds} onChange={(e) => setInputSeconds(Number(e.target.value))} className="appearance-none bg-transparent outline-none cursor-pointer text-center w-6 hover:text-blue-600 transition-colors">
+                                                {[...Array(60).keys()].map(s => <option key={s} value={s}>{String(s).padStart(2, '0')}</option>)}
+                                            </select>
+                                        </div>
+                                    ) : (
+                                        <div className={`font-mono font-bold text-base tracking-wider ${timeLeft <= 300 && timerStatus === 'running' ? 'text-red-600 animate-pulse' : 'text-gray-800'}`}>
+                                            {formatTime(timeLeft)}
+                                        </div>
+                                    )}
+                                    {!isSubmitted && (
+                                        <div className="flex items-center pl-1 border-l border-gray-200">
+                                            {timerStatus === 'idle' && (
+                                                <button onClick={startTimer} className="p-1 ml-1 rounded-full text-green-600 hover:bg-green-50"><svg className="w-5 h-5 fill-current" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" /></svg></button>
+                                            )}
+                                            {timerStatus === 'running' && (
+                                                <button onClick={() => setTimerStatus('paused')} className="p-1 ml-1 rounded-full text-amber-500 hover:bg-amber-50">
+                                                    <svg className="w-5 h-5 fill-current" viewBox="0 0 24 24">
+                                                        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z" />
+                                                    </svg>
+                                                </button>
+                                            )}
+                                            {timerStatus === 'paused' && (
+                                                <button onClick={() => setTimerStatus('running')} className="p-1 ml-1 rounded-full text-blue-500 hover:bg-blue-50"><svg className="w-5 h-5 fill-current" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" /></svg></button>
+                                            )}
+                                        </div>
+                                    )}
                                 </div>
                             )}
                         </div>
 
-                        {!isSubmitted ? (
-                            <div className="flex flex-col gap-3 mt-4 border-t pt-4">
-                                {activeExam.type === 'UAT' ? (
-                                    <div className="text-sm text-gray-600 mb-1">
-                                        Answered: <span className="font-bold">
-                                            {uatSection === 'english'
-                                                ? activeExam.questions.slice(0, 55).filter(q => answers[q.id]).length
-                                                : activeExam.questions.slice(55).filter(q => answers[q.id]).length}
-                                        </span> / {uatSection === 'english' ? 55 : Math.max(0, activeExam.questions.length - 55)}
-                                    </div>
-                                ) : (
-                                    <div className="text-sm text-gray-600 mb-1">
-                                        Answered: <span className="font-bold">{Object.keys(answers).length}</span> / {activeExam.questions.length}
-                                    </div>
-                                )}
-
-                                {activeExam.type === 'UAT' && uatSection === 'english' ? (
-                                    <button onClick={handleStartMath} className="w-full px-4 py-3 bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 transition-colors shadow-sm">
-                                        Submit English & Start Math
-                                    </button>
-                                ) : (
-                                    <button onClick={handleSubmit} className="w-full px-4 py-3 bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 transition-colors shadow-sm">
-                                        Submit Exam
-                                    </button>
-                                )}
-                            </div>
-                        ) : (
-                            <div className="flex flex-col gap-3 mt-4 pt-3 border-t border-gray-200">
-                                {activeExam.type === 'UAT' ? (
-                                    <>
-                                        <div className="text-sm font-normal text-gray-900 flex justify-between">
-                                            English Score: <span className="font-bold text-blue-600">{englishScore} / 55</span>
+                        <header className="mb-6 text-center mt-2 border-b border-gray-200 pb-4">
+                            <h1 className="text-3xl sm:text-4xl font-bold text-[#111827] mb-2">{activeExam.title}</h1>
+                            <span className="px-3 py-1 bg-gray-100 text-gray-600 rounded-full text-sm font-medium">{activeExam.subject}</span>
+                        </header>
+                        <div className="flex flex-col lg:flex-row gap-6 relative">
+                            <aside className="w-full lg:w-72 shrink-0 lg:sticky lg:top-6 h-fit bg-white rounded-lg border border-gray-200 shadow-sm p-4 order-2 lg:order-1">
+                                <h3 className="text-lg font-bold text-gray-900 mb-3 border-b pb-2">Questions</h3>
+                                <div className="pr-2 pb-2 max-h-[300px] lg:max-h-[50vh] overflow-y-auto">
+                                    {activeExam.type === 'UAT' ? (
+                                        <>
+                                            {(isSubmitted || uatSection === 'english') && (
+                                                <>
+                                                    <div className="text-xs font-bold text-gray-500 mb-2 uppercase tracking-wide">English (1-55)</div>
+                                                    <div className="grid grid-cols-5 sm:grid-cols-8 md:grid-cols-10 lg:grid-cols-5 gap-2 mb-4">
+                                                        {activeExam.questions.slice(0, 55).map((q, idx) => renderQuestionButton(q, idx))}
+                                                    </div>
+                                                </>
+                                            )}
+                                            {(isSubmitted || uatSection === 'math') && activeExam.questions.length > 55 && (
+                                                <>
+                                                    <div className="text-xs font-bold text-gray-500 mb-2 uppercase tracking-wide border-t border-gray-100 pt-3">Mathematics (56+)</div>
+                                                    <div className="grid grid-cols-5 sm:grid-cols-8 md:grid-cols-10 lg:grid-cols-5 gap-2 mb-2">
+                                                        {activeExam.questions.slice(55).map((q, idx) => renderQuestionButton(q, idx + 55))}
+                                                    </div>
+                                                </>
+                                            )}
+                                        </>
+                                    ) : (
+                                        <div className="grid grid-cols-5 sm:grid-cols-8 md:grid-cols-10 lg:grid-cols-5 gap-2 mb-2">
+                                            {activeExam.questions.map((q, idx) => renderQuestionButton(q, idx))}
                                         </div>
-                                        <div className="text-sm font-normal text-gray-900 flex justify-between">
-                                            Math Score: <span className="font-bold text-purple-600">{mathScore} / {activeExam.questions.length > 55 ? activeExam.questions.length - 55 : 0}</span>
-                                        </div>
-                                        <div className="text-base font-bold text-gray-900 border-t pt-2 mt-1 flex justify-between">
-                                            Total Score: <span className={scoreColorClass}>{score} / {activeExam.questions.length}</span>
-                                        </div>
-                                    </>
-                                ) : (
-                                    <div className={`text-4xl font-extrabold ${scoreColorClass}`}>
-                                        {displayScoreText}
-                                    </div>
-                                )}
-                                <div className="flex flex-col gap-2 mt-1">
-                                    <button onClick={() => setShowResetModal(true)} className="w-full px-4 py-2 bg-white border border-gray-300 text-gray-800 font-medium text-sm rounded-lg hover:bg-gray-50 transition-colors">Retake Exam</button>
-                                    <button onClick={openExportModal} className="w-full px-4 py-2 bg-purple-100 text-purple-800 font-medium text-sm rounded-lg hover:bg-purple-200 transition-colors flex justify-center items-center gap-2">
-                                        Export to AI
-                                    </button>
-                                </div>
-                            </div>
-                        )}
-                    </aside>
-
-                    <main className="flex-1 order-1 lg:order-2">
-                        <div className="bg-[#f8f9fa] border border-gray-200 rounded-lg p-5 sm:p-8 shadow-sm min-h-[400px] flex flex-col justify-between">
-                            <div>
-                                {question.passage && (
-                                    <Passage
-                                        title={question.passageTitle}
-                                        text={question.passage}
-                                        isHTML={question.isHTML}
-                                    />
-                                )}
-                                <div className="mb-5 flex justify-between items-start gap-4">
-                                    <div className="w-full overflow-hidden">
-                                        <h2 className="text-indigo-500 text-xs font-bold uppercase tracking-wider mb-2">
-                                            {activeExam.type === 'UAT'
-                                                ? (currentIndex < 55 ? `English Section - Question ${currentIndex + 1}` : `Mathematics Section - Question ${currentIndex + 1}`)
-                                                : `Question ${currentIndex + 1}`
-                                            }
-                                        </h2>
-                                        {question.image && <img src={question.image} alt="Figure" className="mb-4 max-w-full rounded-md border border-gray-200 mt-2 max-h-64 object-contain" />}
-                                        <div className="text-gray-900 text-lg sm:text-xl whitespace-pre-wrap leading-relaxed">
-                                            <span className="font-bold mr-2">{currentIndex + 1}.</span><MathText text={question.text} />
-                                        </div>
-                                    </div>
-                                    <button onClick={() => toggleFlag(question.id)} className={`p-1.5 rounded-md transition-colors group ${flagged[question.id] ? "text-red-500 fill-red-500" : "text-gray-400 hover:text-gray-600 fill-none"}`}>
-                                        <svg className="w-7 h-7" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M3 21v-4m0 0V5a2 2 0 012-2h6.5l1 1H21l-3 6 3 6h-8.5l-1-1H5a2 2 0 00-2 2zm9-13.5V9" /></svg>
-                                    </button>
+                                    )}
                                 </div>
 
-                                <div className="space-y-4 pl-0 sm:pl-6 transition-all duration-300">
-                                    {question.options.map((option) => {
-                                        const isSelected = answers[question.id] === option.id;
-                                        const isCorrect = option.id === question.correctAnswer;
-                                        let labelClass = "flex items-start p-3 border rounded-lg transition-colors cursor-pointer w-full " +
-                                            (isSubmitted ? (isCorrect ? "bg-green-50 border-green-300" : (isSelected ? "bg-red-50 border-red-300" : "bg-gray-50 border-gray-200 opacity-60 cursor-not-allowed"))
-                                                : (isSelected ? "bg-blue-50 border-blue-300" : "bg-white border-gray-200 hover:bg-gray-50"));
+                                {!isSubmitted ? (
+                                    <div className="flex flex-col gap-3 mt-4 border-t pt-4">
+                                        {activeExam.type === 'UAT' ? (
+                                            <div className="text-sm text-gray-600 mb-1">
+                                                Answered: <span className="font-bold">
+                                                    {uatSection === 'english'
+                                                        ? activeExam.questions.slice(0, 55).filter(q => answers[q.id]).length
+                                                        : activeExam.questions.slice(55).filter(q => answers[q.id]).length}
+                                                </span> / {uatSection === 'english' ? 55 : Math.max(0, activeExam.questions.length - 55)}
+                                            </div>
+                                        ) : (
+                                            <div className="text-sm text-gray-600 mb-1">
+                                                Answered: <span className="font-bold">{Object.keys(answers).length}</span> / {activeExam.questions.length}
+                                            </div>
+                                        )}
 
-                                        return (
-                                            <label key={option.id} className={labelClass}>
-                                                <div className="flex items-center h-6 mt-0.5 shrink-0">
-                                                    <input type="radio" checked={isSelected} onChange={() => handleOptionSelect(question.id, option.id)} disabled={isSubmitted} className="w-5 h-5 text-blue-600 bg-white border-gray-300 cursor-pointer" />
+                                        {activeExam.type === 'UAT' && uatSection === 'english' ? (
+                                            <button onClick={handleStartMath} className="w-full px-4 py-3 bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 transition-colors shadow-sm">
+                                                Submit English & Start Math
+                                            </button>
+                                        ) : (
+                                            <button onClick={handleSubmit} className="w-full px-4 py-3 bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 transition-colors shadow-sm">
+                                                Submit Exam
+                                            </button>
+                                        )}
+                                    </div>
+                                ) : (
+                                    <div className="flex flex-col gap-3 mt-4 pt-3 border-t border-gray-200">
+                                        {activeExam.type === 'UAT' ? (
+                                            <>
+                                                <div className="text-sm font-normal text-gray-900 flex justify-between">
+                                                    English Score: <span className="font-bold text-blue-600">{englishScore} / 55</span>
                                                 </div>
-                                                <span className={`ml-3 text-base mt-0.5 w-full ${isSubmitted ? (isCorrect ? "text-green-800 font-medium" : (isSelected ? "text-red-800 font-medium" : "text-gray-700")) : "text-gray-700"}`}>
-                                                    <span className="font-semibold mr-1">{option.id}.</span> <MathText text={option.text} />
-                                                </span>
-                                            </label>
-                                        );
-                                    })}
-                                    {!isSubmitted && answers[question.id] && (
-                                        <button
-                                            onClick={() => {
-                                                const newAnswers = { ...answers };
-                                                delete newAnswers[question.id];
-                                                setAnswers(newAnswers);
-                                            }}
-                                            className="mt-3 text-sm text-gray-500 hover:text-gray-700 flex items-center gap-1.5 font-medium transition-colors cursor-pointer"
-                                        >
-                                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
-                                            </svg>
-                                            Clear Choice
-                                        </button>
-                                    )}
+                                                <div className="text-sm font-normal text-gray-900 flex justify-between">
+                                                    Math Score: <span className="font-bold text-purple-600">{mathScore} / {activeExam.questions.length > 55 ? activeExam.questions.length - 55 : 0}</span>
+                                                </div>
+                                                <div className="text-base font-bold text-gray-900 border-t pt-2 mt-1 flex justify-between">
+                                                    Total Score: <span className={scoreColorClass}>{score} / {activeExam.questions.length}</span>
+                                                </div>
+                                            </>
+                                        ) : (
+                                            <div className={`text-4xl font-extrabold ${scoreColorClass}`}>
+                                                {displayScoreText}
+                                            </div>
+                                        )}
+                                        <div className="flex flex-col gap-2 mt-1">
+                                            <button onClick={() => setShowResetModal(true)} className="w-full px-4 py-2 bg-white border border-gray-300 text-gray-800 font-medium text-sm rounded-lg hover:bg-gray-50 transition-colors">Retake Exam</button>
+                                            <button onClick={openExportModal} className="w-full px-4 py-2 bg-purple-100 text-purple-800 font-medium text-sm rounded-lg hover:bg-purple-200 transition-colors flex justify-center items-center gap-2">
+                                                Export to AI
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
+                            </aside>
 
-                                    {flagged[question.id] && (
-                                        <div className="mt-5">
-                                            <label className="block text-sm font-medium text-[#c07c24] mb-2">
-                                                Why did you flag this question? (Helps AI explain it to you later)
-                                            </label>
-                                            <textarea
-                                                value={flagReasons[question.id] || ''}
-                                                onChange={(e) => setFlagReasons({ ...flagReasons, [question.id]: e.target.value })}
-                                                placeholder="E.g., I was confused between options B and C because..."
-                                                rows="2"
-                                                className="w-full border border-yellow-400 rounded-md p-3 text-sm text-gray-800 bg-[#fffeeb] focus:outline-none focus:ring-0 resize-y"
+                            <main className="flex-1 order-1 lg:order-2">
+                                <div className="bg-[#f8f9fa] border border-gray-200 rounded-lg p-5 sm:p-8 shadow-sm min-h-[400px] flex flex-col justify-between">
+                                    <div>
+                                        {question.passage && (
+                                            <Passage
+                                                title={question.passageTitle}
+                                                text={question.passage}
+                                                isHTML={question.isHTML}
                                             />
+                                        )}
+                                        <div className="mb-5 flex justify-between items-start gap-4">
+                                            <div className="w-full overflow-hidden">
+                                                <h2 className="text-indigo-500 text-xs font-bold uppercase tracking-wider mb-2">
+                                                    {activeExam.type === 'UAT'
+                                                        ? (currentIndex < 55 ? `English Section - Question ${currentIndex + 1}` : `Mathematics Section - Question ${currentIndex + 1}`)
+                                                        : `Question ${currentIndex + 1}`
+                                                    }
+                                                </h2>
+                                                {question.image && <img src={question.image} alt="Figure" className="mb-4 max-w-full rounded-md border border-gray-200 mt-2 max-h-64 object-contain" />}
+                                                <div className="text-gray-900 text-lg sm:text-xl whitespace-pre-wrap leading-relaxed">
+                                                    <span className="font-bold mr-2">{currentIndex + 1}.</span><MathText text={question.text} />
+                                                </div>
+                                            </div>
+                                            <button onClick={() => toggleFlag(question.id)} className={`p-1.5 rounded-md transition-colors group ${flagged[question.id] ? "text-red-500 fill-red-500" : "text-gray-400 hover:text-gray-600 fill-none"}`}>
+                                                <svg className="w-7 h-7" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M3 21v-4m0 0V5a2 2 0 012-2h6.5l1 1H21l-3 6 3 6h-8.5l-1-1H5a2 2 0 00-2 2zm9-13.5V9" /></svg>
+                                            </button>
                                         </div>
-                                    )}
 
-                                    {isSubmitted && (
-                                        <div className={`mt-6 p-5 rounded-lg border text-sm sm:text-base ${answers[question.id] === question.correctAnswer
-                                            ? 'bg-emerald-50/60 border-emerald-200'
-                                            : 'bg-red-50/60 border-red-200'
-                                            }`}>
-                                            <div className="flex items-center gap-2 mb-3">
-                                                {answers[question.id] === question.correctAnswer ? (
-                                                    <span className="font-bold text-emerald-700 flex items-center gap-1.5 text-base">
-                                                        ✓ Correct
-                                                    </span>
-                                                ) : (
-                                                    <span className="font-bold text-red-700 flex items-center gap-1.5 text-base">
-                                                        ✕ Incorrect
-                                                    </span>
-                                                )}
-                                                <span className="text-gray-500 text-sm">
-                                                    (Correct Answer: {question.correctAnswer})
-                                                </span>
-                                            </div>
-                                            <div className="font-bold text-gray-900 mb-1.5">Explanation:</div>
-                                            <div className="text-gray-800 leading-relaxed">
-                                                <MathText text={question.explanation || "No detailed explanation available for this question."} />
-                                            </div>
+                                        <div className="space-y-4 pl-0 sm:pl-6 transition-all duration-300">
+                                            {question.options.map((option) => {
+                                                const isSelected = answers[question.id] === option.id;
+                                                const isCorrect = option.id === question.correctAnswer;
+                                                let labelClass = "flex items-start p-3 border rounded-lg transition-colors cursor-pointer w-full " +
+                                                    (isSubmitted ? (isCorrect ? "bg-green-50 border-green-300" : (isSelected ? "bg-red-50 border-red-300" : "bg-gray-50 border-gray-200 opacity-60 cursor-not-allowed"))
+                                                        : (isSelected ? "bg-blue-50 border-blue-300" : "bg-white border-gray-200 hover:bg-gray-50"));
+
+                                                return (
+                                                    <label key={option.id} className={labelClass}>
+                                                        <div className="flex items-center h-6 mt-0.5 shrink-0">
+                                                            <input type="radio" checked={isSelected} onChange={() => handleOptionSelect(question.id, option.id)} disabled={isSubmitted} className="w-5 h-5 text-blue-600 bg-white border-gray-300 cursor-pointer" />
+                                                        </div>
+                                                        <span className={`ml-3 text-base mt-0.5 w-full ${isSubmitted ? (isCorrect ? "text-green-800 font-medium" : (isSelected ? "text-red-800 font-medium" : "text-gray-700")) : "text-gray-700"}`}>
+                                                            <span className="font-semibold mr-1">{option.id}.</span> <MathText text={option.text} />
+                                                        </span>
+                                                    </label>
+                                                );
+                                            })}
+                                            {!isSubmitted && answers[question.id] && (
+                                                <button
+                                                    onClick={() => {
+                                                        const newAnswers = { ...answers };
+                                                        delete newAnswers[question.id];
+                                                        setAnswers(newAnswers);
+                                                    }}
+                                                    className="mt-3 text-sm text-gray-500 hover:text-gray-700 flex items-center gap-1.5 font-medium transition-colors cursor-pointer"
+                                                >
+                                                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                                                    </svg>
+                                                    Clear Choice
+                                                </button>
+                                            )}
+
+                                            {flagged[question.id] && (
+                                                <div className="mt-5">
+                                                    <label className="block text-sm font-medium text-[#c07c24] mb-2">
+                                                        Why did you flag this question? (Helps AI explain it to you later)
+                                                    </label>
+                                                    <textarea
+                                                        value={flagReasons[question.id] || ''}
+                                                        onChange={(e) => setFlagReasons({ ...flagReasons, [question.id]: e.target.value })}
+                                                        placeholder="E.g., I was confused between options B and C because..."
+                                                        rows="2"
+                                                        className="w-full border border-yellow-400 rounded-md p-3 text-sm text-gray-800 bg-[#fffeeb] focus:outline-none focus:ring-0 resize-y"
+                                                    />
+                                                </div>
+                                            )}
+
+                                            {isSubmitted && (
+                                                <div className={`mt-6 p-5 rounded-lg border text-sm sm:text-base ${answers[question.id] === question.correctAnswer
+                                                    ? 'bg-emerald-50/60 border-emerald-200'
+                                                    : 'bg-red-50/60 border-red-200'
+                                                    }`}>
+                                                    <div className="flex items-center gap-2 mb-3">
+                                                        {answers[question.id] === question.correctAnswer ? (
+                                                            <span className="font-bold text-emerald-700 flex items-center gap-1.5 text-base">
+                                                                ✓ Correct
+                                                            </span>
+                                                        ) : (
+                                                            <span className="font-bold text-red-700 flex items-center gap-1.5 text-base">
+                                                                ✕ Incorrect
+                                                            </span>
+                                                        )}
+                                                        <span className="text-gray-500 text-sm">
+                                                            (Correct Answer: {question.correctAnswer})
+                                                        </span>
+                                                    </div>
+                                                    <div className="font-bold text-gray-900 mb-1.5">Explanation:</div>
+                                                    <div className="text-gray-800 leading-relaxed">
+                                                        <MathText text={question.explanation || "No detailed explanation available for this question."} />
+                                                    </div>
+                                                </div>
+                                            )}
                                         </div>
-                                    )}
+                                    </div>
+
+                                    <div className="mt-8 flex justify-between border-t border-gray-200 pt-5">
+                                        <button onClick={() => setCurrentIndex(prev => Math.max(0, prev - 1))} disabled={isPrevDisabled} className={`px-5 py-2.5 rounded-lg font-medium flex items-center gap-2 ${isPrevDisabled ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-white border border-gray-300 text-gray-700 hover:bg-gray-50'}`}>
+                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 19l-7-7 7-7" />
+                                            </svg>
+                                            Previous
+                                        </button>
+                                        <button onClick={() => setCurrentIndex(prev => Math.min(activeExam.questions.length - 1, prev + 1))} disabled={isNextDisabled} className={`px-5 py-2.5 rounded-lg font-medium flex items-center gap-2 ${isNextDisabled ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`}>
+                                            Next
+                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 5l7 7-7 7" />
+                                            </svg>
+                                        </button>
+                                    </div>
                                 </div>
-                            </div>
-
-                            <div className="mt-8 flex justify-between border-t border-gray-200 pt-5">
-                                <button onClick={() => setCurrentIndex(prev => Math.max(0, prev - 1))} disabled={isPrevDisabled} className={`px-5 py-2.5 rounded-lg font-medium flex items-center gap-2 ${isPrevDisabled ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-white border border-gray-300 text-gray-700 hover:bg-gray-50'}`}>
-                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 19l-7-7 7-7" />
-                                    </svg>
-                                    Previous
-                                </button>
-                                <button onClick={() => setCurrentIndex(prev => Math.min(activeExam.questions.length - 1, prev + 1))} disabled={isNextDisabled} className={`px-5 py-2.5 rounded-lg font-medium flex items-center gap-2 ${isNextDisabled ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`}>
-                                    Next
-                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 5l7 7-7 7" />
-                                    </svg>
-                                </button>
-                            </div>
+                            </main>
                         </div>
-                    </main>
+                    </div>
                 </div>
-            </div>
-        </div>
-    );
+                );
 }
 
-ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+                ReactDOM.createRoot(document.getElementById('root')).render(<App />);
